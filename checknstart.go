@@ -22,7 +22,7 @@
 // checknstart.exe -setdefault -user pi -pwd xxxxxx -share wd1to -remotefile autorun.inf
 //                 -localfile c:\tools\autorun.inf -cmd sublime
 //                 -regkey "HKCU\Volatile Environment\1\test" -delay 10
-//
+// checknstart.exe -setdefault -user pi -pwd xxxxxx -share wd1to -remotefile autorun.inf -localfile c:\tools\autorun.inf -cmd sublime -regkey "HKCU\Volatile Environment\1\test" -delay 10
 
 package main
 
@@ -56,6 +56,7 @@ type (
 		user           *string
 		pwd            *string
 		backupcmd      *string
+		backupargs     *string
 		backupbase     *string
 		backupuser     *string
 		backuppwd      *string
@@ -64,6 +65,7 @@ type (
 		tosuccessful   *bool
 		setdefault     *bool
 		uploadmode     *bool
+		temp           string
 		limitgetstring *string
 		limitget       uint64
 		limitputstring *string
@@ -89,11 +91,12 @@ const localnamedefval = "c:\\b3s\\dacq\\base\\darwinsav.db"
 const cmddefval = "c:\\b3s\\dacq\\application\\dacq.exe"
 const userdefval = "DACQ"
 const pwddefval = "DACQ"
-const backupcmddefval = "c:\\b3s\\sql anywhere 5.0\\win32\\dbbackup.exe"
+const backupcmddefval = "c:\\b3s\\Sybase\\SQL Anywhere 5.0\\win32\\dbbackup.exe"
+const backupargsdefval = "-c \"dbn=%s;uid=%s;pwd=%s\" -y -d -q"
 const backupbasedefval = "darwin"
 const backupuserdefval = "adm"
 const backuppwddefval = "sql"
-const waitingfordefval = "HKU\\ralala\\dateread"
+const waitingfordefval = "HLM\\SOFTWARE\\KHEOPS\\KZX\\Initialisation\\DATESAUV"
 const limitgetdefval = "10mb"
 const limitputdefval = "32k"
 
@@ -195,6 +198,10 @@ func getRemotePath(ctx *context) string {
 	return fmt.Sprintf("\\\\%s\\%s\\%s", *ctx.endpoint, *ctx.share, *ctx.remotename)
 }
 
+func getTempPath(ctx *context) string {
+	return fmt.Sprintf("%s\\DARWINSAV.WRK", ctx.temp)
+}
+
 // Copy one file to another file
 func copyOneFile(ctx *context) (written int64, err error) {
 	if *ctx.uploadmode {
@@ -213,6 +220,63 @@ func fixedCopy(ctx *context) (int64, error) {
 		return -1, err
 	}
 	return bytes, nil
+}
+
+// Use Backupcmd to do database backup
+func dobackup(ctx *context) error {
+	ctx.starttime = time.Now()
+	defer func() { ctx.endtime = time.Now() }()
+	args := *ctx.backupargs
+	argslog := *ctx.backupargs
+	if args == backupargsdefval {
+		args = fmt.Sprintf(backupargsdefval, *ctx.backupbase, *ctx.backupuser, *ctx.backupcmd)
+		argslog = fmt.Sprintf(backupargsdefval, *ctx.backupbase, *ctx.backupuser, "***")
+	}
+	if *ctx.verbose {
+		log.Println(*ctx.backupcmd, argslog, getTempPath(ctx))
+	}
+	output, err := exec.Command(*ctx.backupcmd, args, getTempPath(ctx)).CombinedOutput()
+	if err != nil {
+		if *ctx.verbose {
+			log.Printf("Backup exec error !\n%s", output)
+		}
+	}
+	return err
+}
+
+func doBackupNCopy(ctx *context) error {
+	if err := dobackup(ctx); err != nil {
+		log.Println("doBackupNCopy error ! Unable to backup file.")
+		return err
+	}
+	finfo, err := getFileSpec(getTempPath(ctx), "temp", *ctx.verbose)
+	if err != nil {
+		log.Println("doBackupNCopy error ! Unable to get file info.")
+		return err
+	}
+	written, err := copyFileContents(finfo.Size(), getTempPath(ctx), getRemotePath(ctx), ctx.limitput)
+	if err != nil {
+		log.Println("doBackupNCopy error ! Unable to copy TempFile to remoteFile.")
+		return err
+	}
+	if written != finfo.Size() {
+		log.Printf("doBackupNCopy error ! Bytes written different that Bytes to copy: %d != %d", written, finfo.Size())
+		return err
+	}
+	if *contexte.verbose {
+		elapsedtime := ctx.endtime.Sub(ctx.starttime)
+		seconds := int64(elapsedtime.Seconds())
+		if seconds == 0 {
+			seconds = 1
+		}
+		fmt.Printf("between(%v,%v)\n  REPORT Temp To Remote:\n  - Elapsed time: %v\n  - Average bandwith usage: %v/s\n",
+			ctx.starttime,
+			ctx.endtime,
+			elapsedtime,
+			humanize.Bytes(uint64(written/seconds)))
+	}
+
+	return nil
 }
 
 // Use net use windows command to map drive/UNCressource
@@ -299,6 +363,7 @@ func setFlagList(ctx *context) {
 	ctx.uploadmode = flag.Bool("upload", false, "Upload mode: Source become Target/no execution at end/use sqlcmd.")
 	// gestion du backup SQL Anywhere
 	ctx.backupcmd = flag.String("sqlcmd", "", fmt.Sprintf("Backup tools full path [%s]", backupcmddefval))
+	ctx.backupargs = flag.String("sqlarg", "", "Backup tools source args [dbbackup default args]")
 	ctx.backupbase = flag.String("sqlbase", "", fmt.Sprintf("SQL anywhere database name [%s]", backupbasedefval))
 	ctx.backupuser = flag.String("sqluser", "", fmt.Sprintf("SQL anywhere user account [%s]", backupuserdefval))
 	ctx.backuppwd = flag.String("sqlpwd", "", "SQL anwyhere password account [***]")
@@ -331,6 +396,7 @@ func processArgs(ctx *context) (err error) {
 		if *ctx.endpoint == "" {
 			*ctx.endpoint = os.Getenv(endpointdefval)
 		}
+		ctx.temp = os.Getenv("TEMP")
 		if *ctx.share == "" {
 			*ctx.share = sharedefval
 		}
@@ -342,6 +408,9 @@ func processArgs(ctx *context) (err error) {
 		}
 		if *ctx.backupcmd == "" {
 			*ctx.backupcmd = backupcmddefval
+		}
+		if *ctx.backupargs == "" {
+			*ctx.backupargs = backupargsdefval
 		}
 		if *ctx.backupbase == "" {
 			*ctx.backupbase = backupbasedefval
@@ -415,25 +484,28 @@ func sqlUpdated(ctx *context) (bool, error) {
 		return false, err
 	}
 	defer keyvalue.Close()
-	if s, _, err := keyvalue.GetStringValue(slices[len(slices)-1]); err != nil {
+	s, _, err := keyvalue.GetStringValue(slices[len(slices)-1])
+	if err != nil {
 		return false, err
-	} else {
-		// log.Println("lu en base de registre:", s)
-		// log.Println("comparaison:", time.Now().Local().Format("02/01/2006"))
-		return s == time.Now().Local().Format("02/01/2006"), nil
 	}
+	// log.Println("lu en base de registre:", s)
+	// log.Println("comparaison:", time.Now().Local().Format("02/01/2006"))
+	return s == time.Now().Local().Format("02/01/2006"), nil
 }
 
 func waitandlaunch(ctx *context) error {
 	var remainingsecs = *ctx.howlong
-	done, err := sqlUpdated(ctx)
+	firstdone, err := sqlUpdated(ctx)
 	if err != nil {
 		log.Println("error in first sqlUpdated?", err)
 		return fmt.Errorf("Unable to get SqlUpdated waitingfor flag [%s]", waitingfordefval)
 	}
-	if done {
-		fmt.Println("Current date is already OK in Registry")
-		return nil
+	if firstdone {
+		fmt.Println("Current date is already OK in Registry.")
+		if !*ctx.tosuccessful {
+			return nil
+		}
+		fmt.Println("Waiting until timeout.")
 	}
 	for {
 		time.Sleep(1 * time.Second)
@@ -443,13 +515,16 @@ func waitandlaunch(ctx *context) error {
 			log.Println("error in sqlUpdated?", err)
 			return fmt.Errorf("Unable to get SqlUpdated waitingfor flag [%s], Remains %d second(s)", waitingfordefval, remainingsecs)
 		}
-		if done {
-			log.Println("Current date is already OK in Registry")
-			return nil
+		if done && !firstdone {
+			log.Println("Current date is OK in Registry")
+			return doBackupNCopy(ctx)
 		}
 		log.Printf("Sleeping 1 second, remaining %d second(s)", remainingsecs)
 		if remainingsecs <= 0 {
 			log.Printf("No update in registry. %d second(s) elapsed.", *ctx.howlong)
+			if *ctx.tosuccessful {
+				return doBackupNCopy(ctx)
+			}
 			return nil
 		}
 	}
@@ -518,7 +593,10 @@ func main() {
 		fmt.Printf("Starting [%s]", *contexte.cmd)
 		exec.Command(*contexte.cmd).Start()
 		fmt.Printf("[%s] started", *contexte.cmd)
-		waitandlaunch(&contexte)
+		if err := waitandlaunch(&contexte); err != nil {
+			log.Printf("WaitAndLaunch error:%v", err)
+			os.Exit(4)
+		}
 	}
 	os.Exit(0)
 }

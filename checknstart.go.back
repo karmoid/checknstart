@@ -1,0 +1,355 @@
+// Package principal de ChecknStart
+// Cross Compilation on Raspberry
+// > set GOOS=linux
+// > set GOARCH=arm
+// > go build checknstart
+//
+// Besoins :
+// - Exécuter des commandes particulières en fonction de trigger
+// - Trigger de temps ou trigger d'état (fichier présent, fichier modifié depuis un certain temps, ....)
+// - Enchaîner des commandes les unes aux autres selon Success / Failed
+// - Gérer des variables fichier, chemin, age, timestamp, date, compteur, etc...
+// - voir si la notion runonce, run, runif est à prendre en compte
+// - Dialogue de confirmation Yes/No ou OK simple
+// 	- Détails possible sur la session en cours (variable d'environnement Horizon)
+package main
+
+import (
+	"flag"
+	"fmt"
+	"io"
+	"io/ioutil"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/dustin/go-humanize"
+	"github.com/efarrer/iothrottler"
+)
+
+// context : Store specific value to alter the program behaviour
+// Like an Args container
+type (
+	context struct {
+		endpoint    *string
+		share       *string
+		remotename  *string
+		localname   *string
+		cmd         *string
+		user        *string
+		pwd         *string
+		limitstring *string
+		reverse     *bool
+		limit       uint64
+		verbose     *bool
+		remoteinfo  os.FileInfo
+		localinfo   os.FileInfo
+		refreshneed bool
+		starttime   time.Time
+		endtime     time.Time
+	}
+)
+
+// contexte : Hold runtime value (from commande line args)
+var contexte context
+
+const dacqname = "DACQ"
+const drivename = "q:"
+
+// Copy one file at once
+// src : Source file to copy
+// dst : Destination file
+// bwlimit : Bandwith limit in bytes by second
+func copyFileContents(size int64, src, dst string, bwlimit uint64) (written int64, err error) {
+	if *contexte.verbose {
+		fmt.Printf("%s -> %s (%s)", src, dst, humanize.Bytes(uint64(size)))
+	}
+	if !*contexte.verbose {
+		fmt.Print(".")
+	}
+
+	pool := iothrottler.NewIOThrottlerPool(iothrottler.BytesPerSecond * iothrottler.Bandwidth(bwlimit))
+	defer pool.ReleasePool()
+
+	file, err := os.Open(src)
+	if err != nil {
+		// fmt.Println("Error:", err) // handle error
+		return 0, err
+	}
+	defer func() {
+		file.Close()
+		if err != nil {
+			if *contexte.verbose {
+				fmt.Print(" KO\n")
+			}
+			if !*contexte.verbose {
+				fmt.Print(".")
+			}
+			return
+		}
+		if *contexte.verbose {
+			fmt.Print(" OK\n")
+		}
+		if !*contexte.verbose {
+			fmt.Print(".")
+		}
+	}()
+
+	throttledFile, err := pool.AddReader(file)
+	if err != nil {
+		// fmt.Println("Error:", err) // handle error
+		// handle error
+		return 0, err
+	}
+
+	out, err := os.Create(dst)
+	if err != nil {
+		// fmt.Println("Error:", err) // handle error
+		return 0, err
+	}
+	defer func() {
+		cerr := out.Close()
+		if err == nil {
+			err = cerr
+		}
+	}()
+	bytesw, err := io.Copy(out, throttledFile)
+	if err != nil {
+		return 0, err
+	}
+	err = out.Sync()
+	return bytesw, err
+}
+
+// Check if path contains Wildcard characters
+func isWildcard(value string) bool {
+	return strings.Contains(value, "*") || strings.Contains(value, "?")
+}
+
+// Get the files' list to copy
+func getFiles(src string) (filesOut []os.FileInfo, errOut error) {
+	pattern := filepath.Base(src)
+	files, err := ioutil.ReadDir(filepath.Dir(src))
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, file := range files {
+		if res, err := filepath.Match(strings.ToLower(pattern), strings.ToLower(file.Name())); res {
+			if err != nil {
+				errOut = err
+				return
+			}
+			filesOut = append(filesOut, file)
+			// fmt.Printf("prise en compte de %s", file.Name())
+		}
+	}
+	return filesOut, nil
+}
+
+func getRemotePath(ctx *context) string {
+	return fmt.Sprintf("%s\\%s", drivename, *ctx.remotename)
+}
+
+// Copy one file to another file
+func copyOneFile(ctx *context) (written int64, err error) {
+	if *ctx.reverse {
+		return copyFileContents(ctx.localinfo.Size(), *ctx.localname, getRemotePath(ctx), ctx.limit)
+	}
+	return copyFileContents(ctx.remoteinfo.Size(), getRemotePath(ctx), *ctx.localname, ctx.limit)
+}
+
+// No more Wildcard and selection in this Array
+// fixedCopy because the Src array is predefined
+func fixedCopy(ctx *context) (int64, error) {
+	ctx.starttime = time.Now()
+	defer func() { ctx.endtime = time.Now() }()
+	bytes, err := copyOneFile(ctx)
+	if err != nil {
+		return -1, err
+	}
+	return bytes, nil
+}
+
+// Use net use windows command to map drive/UNCressource
+func mapDrive(drive string, address string, user string, pw string, verbose bool) ([]byte, error) {
+	exec.Command("c:\\windows\\system32\\net.exe", "use", drive, "/delete").Run()
+	if verbose {
+		log.Println("net use", drive, address, fmt.Sprintf("/user:%s", user), "*******")
+	}
+	return exec.Command("c:\\windows\\system32\\net.exe", "use", drive, address, fmt.Sprintf("/user:%s", user), pw).CombinedOutput()
+}
+
+func getFileSpec(src string, lib string, verbose bool) (os.FileInfo, error) {
+	files, err := getFiles(src)
+	if err != nil {
+		return nil, fmt.Errorf("Can't get %s file info for %s", lib, src)
+	}
+	if len(files) != 1 {
+		return nil, fmt.Errorf("Bad %s file info for %s", lib, src)
+	}
+	if verbose {
+		log.Println("Item:", lib,
+			"file:", files[0].Name(),
+			"size:", humanize.Bytes(uint64(files[0].Size())),
+			"bytesized:", files[0].Size(),
+			"modified:", files[0].ModTime())
+	}
+	return files[0], nil
+}
+
+// Check if remote file exist
+func remoteFileHere(ctx *context) (err error) {
+	out, err := mapDrive(drivename, fmt.Sprintf("\\\\%s\\%s", *ctx.endpoint, *ctx.share), *ctx.user, *ctx.pwd, *ctx.verbose)
+	if err != nil {
+		if *ctx.verbose {
+			log.Println(string(out))
+		}
+		return fmt.Errorf("Can't map remote share on \\\\%s\\%s", *ctx.endpoint, *ctx.share)
+	}
+	finfo, err := getFileSpec(getRemotePath(ctx), "remote", *ctx.verbose)
+	ctx.remoteinfo = finfo
+	return err
+}
+
+// on va comparer les dates des fichiers sources et Destination
+func compareFileAge(ctx *context) (bool, error) {
+	var ltime, rtime time.Time
+	finfo, err := getFileSpec(*ctx.localname, "local", *ctx.verbose)
+	if err != nil {
+		return false, err
+	}
+	ctx.localinfo = finfo
+
+	if *ctx.reverse {
+		ltime = ctx.remoteinfo.ModTime()
+		rtime = ctx.localinfo.ModTime()
+	} else {
+		rtime = ctx.remoteinfo.ModTime()
+		ltime = ctx.localinfo.ModTime()
+	}
+	ctx.refreshneed = rtime.After(ltime)
+	if ctx.refreshneed {
+		if *ctx.verbose {
+			log.Printf("File need to be refreshed: %s > %s", rtime, ltime)
+		}
+	}
+	return ctx.refreshneed, nil
+}
+
+// Prepare Command Line Args parsing
+func setFlagList(ctx *context) {
+	ctx.endpoint = flag.String("endpoint", "", "Physical remote device (versus current VDI)")
+	ctx.share = flag.String("share", "kheops", "Share name on endpoint")
+	ctx.remotename = flag.String("remotefile", "darwinsav.db", "Source filename to check & get (no wildcard)")
+	ctx.localname = flag.String("localfile", "c:\\b3s\\dacq\\base\\darwinsav.db", "Target Filename for copy (no wildcard)")
+	ctx.cmd = flag.String("cmd", "c:\\b3s\\dacq\\application\\dacq.exe", "Target cmd when ready")
+	ctx.user = flag.String("user", "", "User account to use share on endpoint")
+	ctx.pwd = flag.String("pwd", "", "Password account to use share on endpoint")
+	ctx.limitstring = flag.String("limit", "10MB", "Bytes per second limit (default 10MB/s unlimited)")
+	ctx.verbose = flag.Bool("verbose", false, "Verbose mode")
+	ctx.reverse = flag.Bool("reverse", false, "Reverse mode. Source become Target.")
+	flag.Parse()
+}
+
+// Check args and return error if anything is wrong
+func processArgs(ctx *context) (err error) {
+	setFlagList(&contexte)
+
+	if isWildcard(*ctx.localname) {
+		return fmt.Errorf("Local name can't include wildcard: %s", *ctx.localname)
+	}
+
+	if isWildcard(*ctx.remotename) {
+		return fmt.Errorf("remote name can't include wildcard: %s", *ctx.remotename)
+	}
+
+	ctxlimit, err := humanize.ParseBytes(*ctx.limitstring)
+	if err != nil {
+		return fmt.Errorf("Limit value - Error:%s", err) // handle error
+	}
+	ctx.limit = ctxlimit
+
+	if *ctx.verbose {
+		fmt.Println("limit is", humanize.Bytes(uint64(ctx.limit)), "by second")
+		fmt.Printf("approx. %sit/s.\n\n", strings.ToLower(humanize.Bytes(uint64(ctx.limit*9))))
+	}
+	if *ctx.pwd == "" {
+		*ctx.pwd = dacqname
+	}
+	if *ctx.user == "" {
+		*ctx.user = dacqname
+	}
+	if *ctx.endpoint == "" {
+		*ctx.endpoint = os.Getenv("ViewClient_Machine_Name")
+	}
+	return nil
+}
+
+// VersionNum : Litteral version
+const VersionNum = "1.0"
+
+// V 1.0 - Initial release - 2017 09 11
+func main() {
+	fmt.Printf("checknstart - Check and start - C.m. 2017 - V%s\n", VersionNum)
+
+	// Récupération des arguments de base (Variable d'environnement ou Argument en ligne de commande)
+	if err := processArgs(&contexte); err != nil {
+		fmt.Println(err)
+		os.Exit(1) // User error (Usage)
+	}
+
+	// le fichier distant est il accessible
+	if err := remoteFileHere(&contexte); err != nil {
+		fmt.Println(err)
+		os.Exit(2) // File not found
+	}
+
+	if *contexte.verbose {
+		if *contexte.reverse {
+			log.Println("processing on local device", os.Getenv("COMPUTERNAME"),
+				"file comparison versus endpoint", *contexte.endpoint, "in REVERSE local to remote")
+		} else {
+			log.Println("processing on local device", os.Getenv("COMPUTERNAME"),
+				"file comparison versus endpoint", *contexte.endpoint)
+		}
+	}
+
+	//	A-t-on besoin de récupérer la base de données remote en local
+	docopy, err := compareFileAge(&contexte)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(2) // File not found
+	}
+
+	// Si les dates de fichier nous l'impose, nous devrons copier les fichiers
+	if docopy {
+		bytes, err := fixedCopy(&contexte)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(3) // Copy error
+		}
+		elapsedtime := contexte.endtime.Sub(contexte.starttime)
+		seconds := int64(elapsedtime.Seconds())
+		if seconds == 0 {
+			seconds = 1
+		}
+		if *contexte.verbose {
+			fmt.Printf("between(%v,%v)\n  REPORT:\n  - Elapsed time: %v\n  - Average bandwith usage: %v/s\n",
+				contexte.starttime,
+				contexte.endtime,
+				elapsedtime,
+				humanize.Bytes(uint64(bytes/seconds)))
+		}
+		fmt.Println("copy done.")
+	} else {
+		fmt.Println("no copy needed.")
+	}
+	if !*contexte.reverse {
+		fmt.Printf("Starting [%s]", *contexte.cmd)
+		exec.Command(*contexte.cmd).Start()
+	}
+	os.Exit(0)
+}
