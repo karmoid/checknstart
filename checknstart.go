@@ -23,7 +23,9 @@
 //                 -localfile c:\tools\autorun.inf -cmd sublime
 //                 -regkey "HKCU\Volatile Environment\1\test" -delay 10
 // checknstart.exe -setdefault -user pi -pwd xxxxxx -share wd1to -remotefile autorun.inf -localfile c:\tools\autorun.inf -cmd sublime -regkey "HKCU\Volatile Environment\1\test" -delay 10
-
+//
+// checknstart.exe -verbose -localfile c:\tools\dacqtest\DARWINSAV.DB -remotefile c:\tools\dacqtest\DARWINSAV.DB.bak -getrate 64k -putrate 64k -cmd calc.exe -delay 6 -regkey "HKCU\Volatile Environment\1\test" -sqlcmd c:\windows\system32\cmd.exe -sqlarg "copy c:\tools\dacqtest\darwinsav.db"
+// checknstart.exe -verbose -localfile c:\tools\dacqtest\DARWINSAV.DB -remotefile c:\tools\dacqtest\DARWINSAV.DB.bak -getrate 640k -putrate 640k -cmd calc.exe -delay 6 -regkey "HKCU\Volatile Environment\1\test" -sqlcmd c:\windows\system32\cmd.exe -sqlarg "copy c:\tools\dacqtest\darwinsav.db" -timeoutko
 package main
 
 import (
@@ -62,7 +64,7 @@ type (
 		backuppwd      *string
 		waitingfor     *string
 		howlong        *int64
-		tosuccessful   *bool
+		tocancel       *bool
 		setdefault     *bool
 		uploadmode     *bool
 		temp           string
@@ -96,7 +98,7 @@ const backupargsdefval = "-c \"dbn=%s;uid=%s;pwd=%s\" -y -d -q"
 const backupbasedefval = "darwin"
 const backupuserdefval = "adm"
 const backuppwddefval = "sql"
-const waitingfordefval = "HLM\\SOFTWARE\\KHEOPS\\KZX\\Initialisation\\DATESAUV"
+const waitingfordefval = "HKLM\\SOFTWARE\\KHEOPS\\KZX\\Initialisation\\DATESAUV"
 const limitgetdefval = "10mb"
 const limitputdefval = "32k"
 
@@ -104,7 +106,7 @@ const limitputdefval = "32k"
 // src : Source file to copy
 // dst : Destination file
 // bwlimit : Bandwith limit in bytes by second
-func copyFileContents(size int64, src, dst string, bwlimit uint64) (written int64, err error) {
+func copyFileContents(mdate time.Time, size int64, src, dst string, bwlimit uint64) (int64, error) {
 	if *contexte.verbose {
 		fmt.Printf("%s -> %s (%s)", src, dst, humanize.Bytes(uint64(size)))
 	}
@@ -128,6 +130,9 @@ func copyFileContents(size int64, src, dst string, bwlimit uint64) (written int6
 			}
 			if !*contexte.verbose {
 				fmt.Print(".")
+			}
+			if err := os.Chtimes(dst, mdate, mdate); err != nil {
+				log.Fatal(err)
 			}
 			return
 		}
@@ -205,9 +210,9 @@ func getTempPath(ctx *context) string {
 // Copy one file to another file
 func copyOneFile(ctx *context) (written int64, err error) {
 	if *ctx.uploadmode {
-		return copyFileContents(ctx.localinfo.Size(), *ctx.localname, getRemotePath(ctx), ctx.limitput)
+		return copyFileContents(ctx.localinfo.ModTime(), ctx.localinfo.Size(), *ctx.localname, getRemotePath(ctx), ctx.limitput)
 	}
-	return copyFileContents(ctx.remoteinfo.Size(), getRemotePath(ctx), *ctx.localname, ctx.limitget)
+	return copyFileContents(ctx.localinfo.ModTime(), ctx.remoteinfo.Size(), getRemotePath(ctx), *ctx.localname, ctx.limitget)
 }
 
 // No more Wildcard and selection in this Array
@@ -224,8 +229,6 @@ func fixedCopy(ctx *context) (int64, error) {
 
 // Use Backupcmd to do database backup
 func dobackup(ctx *context) error {
-	ctx.starttime = time.Now()
-	defer func() { ctx.endtime = time.Now() }()
 	args := *ctx.backupargs
 	argslog := *ctx.backupargs
 	if args == backupargsdefval {
@@ -245,6 +248,7 @@ func dobackup(ctx *context) error {
 }
 
 func doBackupNCopy(ctx *context) error {
+	ctx.starttime = time.Now()
 	if err := dobackup(ctx); err != nil {
 		log.Println("doBackupNCopy error ! Unable to backup file.")
 		return err
@@ -254,7 +258,7 @@ func doBackupNCopy(ctx *context) error {
 		log.Println("doBackupNCopy error ! Unable to get file info.")
 		return err
 	}
-	written, err := copyFileContents(finfo.Size(), getTempPath(ctx), getRemotePath(ctx), ctx.limitput)
+	written, err := copyFileContents(finfo.ModTime(), finfo.Size(), getTempPath(ctx), getRemotePath(ctx), ctx.limitput)
 	if err != nil {
 		log.Println("doBackupNCopy error ! Unable to copy TempFile to remoteFile.")
 		return err
@@ -264,6 +268,7 @@ func doBackupNCopy(ctx *context) error {
 		return err
 	}
 	if *contexte.verbose {
+		ctx.endtime = time.Now()
 		elapsedtime := ctx.endtime.Sub(ctx.starttime)
 		seconds := int64(elapsedtime.Seconds())
 		if seconds == 0 {
@@ -369,7 +374,7 @@ func setFlagList(ctx *context) {
 	ctx.backuppwd = flag.String("sqlpwd", "", "SQL anwyhere password account [***]")
 	ctx.waitingfor = flag.String("regkey", "", fmt.Sprintf("Registry item to check [%s]", waitingfordefval))
 	ctx.howlong = flag.Int64("delay", 5*60, "Checking delay")
-	ctx.tosuccessful = flag.Bool("timeoutok", true, "Timeout is it an option?")
+	ctx.tocancel = flag.Bool("timeoutko", false, "Timeout is it an option? No by default")
 
 	flag.Parse()
 }
@@ -396,7 +401,6 @@ func processArgs(ctx *context) (err error) {
 		if *ctx.endpoint == "" {
 			*ctx.endpoint = os.Getenv(endpointdefval)
 		}
-		ctx.temp = os.Getenv("TEMP")
 		if *ctx.share == "" {
 			*ctx.share = sharedefval
 		}
@@ -425,6 +429,7 @@ func processArgs(ctx *context) (err error) {
 			*ctx.waitingfor = waitingfordefval
 		}
 	}
+	ctx.temp = os.Getenv("TEMP")
 	// pour les limites, il n'y a pas de setdefault à positionner
 	if *ctx.limitgetstring == "" {
 		*ctx.limitgetstring = limitgetdefval
@@ -438,22 +443,21 @@ func processArgs(ctx *context) (err error) {
 	if err != nil {
 		return fmt.Errorf("GetLimit value - Error:%s", err) // handle error
 	}
+	// fmt.Printf("with ctxlimitget=%s, ctx.limitget=%d", *ctx.limitgetstring, ctx.limitget)
 	ctx.limitget = ctxlimitget
 
 	ctxlimitput, err := humanize.ParseBytes(*ctx.limitputstring)
 	if err != nil {
 		return fmt.Errorf("PutLimit value - Error:%s", err) // handle error
 	}
+	// fmt.Printf("with ctxlimitput=%s, ctx.limitput=%d", *ctx.limitputstring, ctx.limitput)
 	ctx.limitput = ctxlimitput
 
 	if *ctx.verbose {
-		if *ctx.uploadmode {
-			fmt.Println("limit is", humanize.Bytes(uint64(ctx.limitput)), "by second")
-			fmt.Printf("approx. %sit/s.\n\n", strings.ToLower(humanize.Bytes(uint64(ctx.limitput*9))))
-		} else {
-			fmt.Println("limit is", humanize.Bytes(uint64(ctx.limitget)), "by second")
-			fmt.Printf("approx. %sit/s.\n\n", strings.ToLower(humanize.Bytes(uint64(ctx.limitget*9))))
-		}
+		fmt.Println("putlimit is", humanize.Bytes(uint64(ctx.limitput)), "by second")
+		fmt.Printf("approx. %sit/s.\n\n", strings.ToLower(humanize.Bytes(uint64(ctx.limitput*9))))
+		fmt.Println("getlimit is", humanize.Bytes(uint64(ctx.limitget)), "by second")
+		fmt.Printf("approx. %sit/s.\n\n", strings.ToLower(humanize.Bytes(uint64(ctx.limitget*9))))
 	}
 	return nil
 }
@@ -502,7 +506,8 @@ func waitandlaunch(ctx *context) error {
 	}
 	if firstdone {
 		fmt.Println("Current date is already OK in Registry.")
-		if !*ctx.tosuccessful {
+		if *ctx.tocancel {
+			fmt.Println("TimeOut will cancel, so return now.")
 			return nil
 		}
 		fmt.Println("Waiting until timeout.")
@@ -519,10 +524,12 @@ func waitandlaunch(ctx *context) error {
 			log.Println("Current date is OK in Registry")
 			return doBackupNCopy(ctx)
 		}
-		log.Printf("Sleeping 1 second, remaining %d second(s)", remainingsecs)
+		if *ctx.verbose {
+			log.Printf("Sleeping 1 second, remaining %d second(s)", remainingsecs)
+		}
 		if remainingsecs <= 0 {
 			log.Printf("No update in registry. %d second(s) elapsed.", *ctx.howlong)
-			if *ctx.tosuccessful {
+			if !*ctx.tocancel {
 				return doBackupNCopy(ctx)
 			}
 			return nil
