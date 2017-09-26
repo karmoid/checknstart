@@ -25,7 +25,7 @@
 // checknstart.exe -setdefault -user pi -pwd xxxxxx -share wd1to -remotefile autorun.inf -localfile c:\tools\autorun.inf -cmd sublime -regkey "HKCU\Volatile Environment\1\test" -delay 10
 //
 // checknstart.exe -verbose -localfile c:\tools\dacqtest\DARWINSAV.DB -remotefile c:\tools\dacqtest\DARWINSAV.DB.bak -getrate 64k -putrate 64k -cmd calc.exe -delay 6 -regkey "HKCU\Volatile Environment\1\test" -sqlcmd c:\windows\system32\cmd.exe -sqlarg "copy c:\tools\dacqtest\darwinsav.db"
-// checknstart.exe -verbose -localfile c:\tools\dacqtest\DARWINSAV.DB -remotefile c:\tools\dacqtest\DARWINSAV.DB.bak -getrate 640k -putrate 640k -cmd calc.exe -delay 6 -regkey "HKCU\Volatile Environment\1\test" -sqlcmd c:\windows\system32\cmd.exe -sqlarg "copy c:\tools\dacqtest\darwinsav.db" -timeoutko
+// checknstart.exe -verbose -localfile c:\tools\dacqtest\DARWINSAV.DB -remotefile c:\tools\dacqtest\DARWINSAV.DB.bak -getrate 640k -putrate 640k -cmd calc.exe -delay 6 -regkey "HKCU\Volatile Environment\2\test" -sqlcmd c:\windows\system32\cmd.exe -sqlarg "/c copy c:\tools\dacqtest\darwinsav.db"
 package main
 
 import (
@@ -88,15 +88,15 @@ var contexte context
 const dacqname = "DACQ"
 const endpointdefval = "ViewClient_Machine_Name"
 const sharedefval = "kheops"
-const remotenamedefval = "darwinsav.db"
+const remotenamedefval = "\\dacq\\base\\darwinsav.db"
 const localnamedefval = "c:\\b3s\\dacq\\base\\darwinsav.db"
 const cmddefval = "c:\\b3s\\dacq\\application\\dacq.exe"
 const userdefval = "DACQ"
-const pwddefval = "DACQ"
+const pwddefval = "dacq"
 const backupcmddefval = "c:\\b3s\\Sybase\\SQL Anywhere 5.0\\win32\\dbbackup.exe"
 const backupargsdefval = "-c \"dbn=%s;uid=%s;pwd=%s\" -y -d -q"
-const backupbasedefval = "darwin"
-const backupuserdefval = "adm"
+const backupbasedefval = "darwinsav"
+const backupuserdefval = "dba"
 const backuppwddefval = "sql"
 const waitingfordefval = "HKLM\\SOFTWARE\\KHEOPS\\KZX\\Initialisation\\DATESAUV"
 const limitgetdefval = "10mb"
@@ -131,9 +131,6 @@ func copyFileContents(mdate time.Time, size int64, src, dst string, bwlimit uint
 			if !*contexte.verbose {
 				fmt.Print(".")
 			}
-			if err := os.Chtimes(dst, mdate, mdate); err != nil {
-				log.Fatal(err)
-			}
 			return
 		}
 		if *contexte.verbose {
@@ -160,6 +157,9 @@ func copyFileContents(mdate time.Time, size int64, src, dst string, bwlimit uint
 		cerr := out.Close()
 		if err == nil {
 			err = cerr
+		}
+		if err2 := os.Chtimes(dst, mdate, mdate); err2 != nil {
+			log.Fatal(err2)
 		}
 	}()
 	bytesw, err := io.Copy(out, throttledFile)
@@ -204,7 +204,7 @@ func getRemotePath(ctx *context) string {
 }
 
 func getTempPath(ctx *context) string {
-	return fmt.Sprintf("%s\\DARWINSAV.WRK", ctx.temp)
+	return ctx.temp
 }
 
 // Copy one file to another file
@@ -212,7 +212,7 @@ func copyOneFile(ctx *context) (written int64, err error) {
 	if *ctx.uploadmode {
 		return copyFileContents(ctx.localinfo.ModTime(), ctx.localinfo.Size(), *ctx.localname, getRemotePath(ctx), ctx.limitput)
 	}
-	return copyFileContents(ctx.localinfo.ModTime(), ctx.remoteinfo.Size(), getRemotePath(ctx), *ctx.localname, ctx.limitget)
+	return copyFileContents(ctx.remoteinfo.ModTime(), ctx.remoteinfo.Size(), getRemotePath(ctx), *ctx.localname, ctx.limitget)
 }
 
 // No more Wildcard and selection in this Array
@@ -232,13 +232,30 @@ func dobackup(ctx *context) error {
 	args := *ctx.backupargs
 	argslog := *ctx.backupargs
 	if args == backupargsdefval {
-		args = fmt.Sprintf(backupargsdefval, *ctx.backupbase, *ctx.backupuser, *ctx.backupcmd)
+		args = fmt.Sprintf(backupargsdefval, *ctx.backupbase, *ctx.backupuser, *ctx.backuppwd)
 		argslog = fmt.Sprintf(backupargsdefval, *ctx.backupbase, *ctx.backupuser, "***")
 	}
 	if *ctx.verbose {
 		log.Println(*ctx.backupcmd, argslog, getTempPath(ctx))
 	}
-	output, err := exec.Command(*ctx.backupcmd, args, getTempPath(ctx)).CombinedOutput()
+	cmd := exec.Command(*ctx.backupcmd)
+	// for idx, argument := range cmd.Args {
+	// 	log.Printf("Avant Args - Arg(%d): [%s]", idx, argument)
+	// }
+	argslist := strings.Split(fmt.Sprintf("%s %s", args, getTempPath(ctx)), " ")
+	for _, argument := range argslist {
+		if len(argument) > 0 && argument[0] == '"' {
+			argument = argument[1:]
+		}
+		if len(argument) > 0 && argument[len(argument)-1] == '"' {
+			argument = argument[:len(argument)-1]
+		}
+		cmd.Args = append(cmd.Args, argument)
+	}
+	// for idx, argument := range cmd.Args {
+	// 	log.Printf("Après Args - Arg(%d): [%s]", idx, argument)
+	// }
+	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if *ctx.verbose {
 			log.Printf("Backup exec error !\n%s", output)
@@ -249,16 +266,17 @@ func dobackup(ctx *context) error {
 
 func doBackupNCopy(ctx *context) error {
 	ctx.starttime = time.Now()
+	fileonly := filepath.Base(*ctx.localname)
 	if err := dobackup(ctx); err != nil {
 		log.Println("doBackupNCopy error ! Unable to backup file.")
 		return err
 	}
-	finfo, err := getFileSpec(getTempPath(ctx), "temp", *ctx.verbose)
+	finfo, err := getFileSpec(fmt.Sprintf("%s\\%s", getTempPath(ctx), fileonly), "temp", *ctx.verbose)
 	if err != nil {
 		log.Println("doBackupNCopy error ! Unable to get file info.")
 		return err
 	}
-	written, err := copyFileContents(finfo.ModTime(), finfo.Size(), getTempPath(ctx), getRemotePath(ctx), ctx.limitput)
+	written, err := copyFileContents(finfo.ModTime(), finfo.Size(), fmt.Sprintf("%s\\%s", getTempPath(ctx), fileonly), getRemotePath(ctx), ctx.limitput)
 	if err != nil {
 		log.Println("doBackupNCopy error ! Unable to copy TempFile to remoteFile.")
 		return err
@@ -404,6 +422,9 @@ func processArgs(ctx *context) (err error) {
 		if *ctx.share == "" {
 			*ctx.share = sharedefval
 		}
+		if *ctx.remotename == "" {
+			*ctx.remotename = remotenamedefval
+		}
 		if *ctx.localname == "" {
 			*ctx.localname = localnamedefval
 		}
@@ -502,7 +523,7 @@ func waitandlaunch(ctx *context) error {
 	firstdone, err := sqlUpdated(ctx)
 	if err != nil {
 		log.Println("error in first sqlUpdated?", err)
-		return fmt.Errorf("Unable to get SqlUpdated waitingfor flag [%s]", waitingfordefval)
+		return fmt.Errorf("Unable to get SqlUpdated waitingfor flag [%s]", *ctx.waitingfor)
 	}
 	if firstdone {
 		fmt.Println("Current date is already OK in Registry.")
@@ -518,7 +539,7 @@ func waitandlaunch(ctx *context) error {
 		done, err := sqlUpdated(ctx)
 		if err != nil {
 			log.Println("error in sqlUpdated?", err)
-			return fmt.Errorf("Unable to get SqlUpdated waitingfor flag [%s], Remains %d second(s)", waitingfordefval, remainingsecs)
+			return fmt.Errorf("Unable to get SqlUpdated waitingfor flag [%s], Remains %d second(s)", *ctx.waitingfor, remainingsecs)
 		}
 		if done && !firstdone {
 			log.Println("Current date is OK in Registry")
