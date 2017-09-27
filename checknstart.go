@@ -66,7 +66,6 @@ type (
 		howlong        *int64
 		tocancel       *bool
 		setdefault     *bool
-		uploadmode     *bool
 		temp           string
 		limitgetstring *string
 		limitget       uint64
@@ -103,6 +102,7 @@ const limitgetdefval = "10mb"
 const limitputdefval = "32k"
 
 // Copy one file at once
+// mdate : Date to set at end (Touch file)
 // src : Source file to copy
 // dst : Destination file
 // bwlimit : Bandwith limit in bytes by second
@@ -195,6 +195,7 @@ func getFiles(src string) (filesOut []os.FileInfo, errOut error) {
 	return filesOut, nil
 }
 
+// Get remote path for file (with Net Use or Not)
 func getRemotePath(ctx *context) string {
 	// si on veut spécifier un path local (pas net use)
 	if *ctx.endpoint == "" && *ctx.share == "" {
@@ -203,15 +204,13 @@ func getRemotePath(ctx *context) string {
 	return fmt.Sprintf("\\\\%s\\%s\\%s", *ctx.endpoint, *ctx.share, *ctx.remotename)
 }
 
+// Get Path for tempfiles
 func getTempPath(ctx *context) string {
 	return ctx.temp
 }
 
 // Copy one file to another file
 func copyOneFile(ctx *context) (written int64, err error) {
-	if *ctx.uploadmode {
-		return copyFileContents(ctx.localinfo.ModTime(), ctx.localinfo.Size(), *ctx.localname, getRemotePath(ctx), ctx.limitput)
-	}
 	return copyFileContents(ctx.remoteinfo.ModTime(), ctx.remoteinfo.Size(), getRemotePath(ctx), *ctx.localname, ctx.limitget)
 }
 
@@ -264,6 +263,7 @@ func dobackup(ctx *context) error {
 	return err
 }
 
+// Do backup Cmd and Copy resulting file
 func doBackupNCopy(ctx *context) error {
 	ctx.starttime = time.Now()
 	fileonly := filepath.Base(*ctx.localname)
@@ -311,6 +311,7 @@ func mapDrive(address string, user string, pw string, verbose bool) ([]byte, err
 	return exec.Command("c:\\windows\\system32\\net.exe", "use", address, fmt.Sprintf("/user:%s", user), pw).CombinedOutput()
 }
 
+// Get file info
 func getFileSpec(src string, lib string, verbose bool) (os.FileInfo, error) {
 	files, err := getFiles(src)
 	if err != nil {
@@ -354,13 +355,9 @@ func compareFileAge(ctx *context) (bool, error) {
 	}
 	ctx.localinfo = finfo
 
-	if *ctx.uploadmode {
-		ltime = ctx.remoteinfo.ModTime()
-		rtime = ctx.localinfo.ModTime()
-	} else {
-		rtime = ctx.remoteinfo.ModTime()
-		ltime = ctx.localinfo.ModTime()
-	}
+	rtime = ctx.remoteinfo.ModTime()
+	ltime = ctx.localinfo.ModTime()
+
 	ctx.refreshneed = rtime.After(ltime)
 	if ctx.refreshneed {
 		if *ctx.verbose {
@@ -383,7 +380,6 @@ func setFlagList(ctx *context) {
 	ctx.limitgetstring = flag.String("getrate", "", fmt.Sprintf("Download bytes per second limit [%s]", limitgetdefval))
 	ctx.limitputstring = flag.String("putrate", "", fmt.Sprintf("Upload bytes per second limit [%s]", limitputdefval))
 	ctx.verbose = flag.Bool("verbose", false, "Verbose mode")
-	ctx.uploadmode = flag.Bool("upload", false, "Upload mode: Source become Target/no execution at end/use sqlcmd.")
 	// gestion du backup SQL Anywhere
 	ctx.backupcmd = flag.String("sqlcmd", "", fmt.Sprintf("Backup tools full path [%s]", backupcmddefval))
 	ctx.backupargs = flag.String("sqlarg", "", "Backup tools source args [dbbackup default args]")
@@ -483,6 +479,7 @@ func processArgs(ctx *context) (err error) {
 	return nil
 }
 
+// Check if Registry Key (regkey args) is modified with current date
 func sqlUpdated(ctx *context) (bool, error) {
 	var regkey registry.Key
 	var err error
@@ -518,6 +515,7 @@ func sqlUpdated(ctx *context) (bool, error) {
 	return s == time.Now().Local().Format("02/01/2006"), nil
 }
 
+// Wait for update and Launch copy if needed
 func waitandlaunch(ctx *context) error {
 	var remainingsecs = *ctx.howlong
 	firstdone, err := sqlUpdated(ctx)
@@ -578,13 +576,8 @@ func main() {
 	}
 
 	if *contexte.verbose {
-		if *contexte.uploadmode {
-			log.Println("processing on local device", os.Getenv("COMPUTERNAME"),
-				"file comparison versus endpoint", *contexte.endpoint, "in REVERSE local to remote")
-		} else {
-			log.Println("processing on local device", os.Getenv("COMPUTERNAME"),
-				"file comparison versus endpoint", *contexte.endpoint)
-		}
+		log.Println("processing on local device", os.Getenv("COMPUTERNAME"),
+			"file comparison versus endpoint", *contexte.endpoint)
 	}
 
 	//	A-t-on besoin de récupérer la base de données remote en local
@@ -617,14 +610,12 @@ func main() {
 	} else {
 		fmt.Println("no copy needed.")
 	}
-	if !*contexte.uploadmode {
-		fmt.Printf("Starting [%s]", *contexte.cmd)
-		exec.Command(*contexte.cmd).Start()
-		fmt.Printf("[%s] started", *contexte.cmd)
-		if err := waitandlaunch(&contexte); err != nil {
-			log.Printf("WaitAndLaunch error:%v", err)
-			os.Exit(4)
-		}
+	fmt.Printf("Starting [%s]", *contexte.cmd)
+	exec.Command(*contexte.cmd).Start()
+	fmt.Printf("[%s] started", *contexte.cmd)
+	if err := waitandlaunch(&contexte); err != nil {
+		log.Printf("WaitAndLaunch error:%v", err)
+		os.Exit(4)
 	}
 	os.Exit(0)
 }
