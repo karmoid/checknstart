@@ -100,6 +100,7 @@ const backuppwddefval = "sql"
 const waitingfordefval = "HKLM\\SOFTWARE\\KHEOPS\\KZX\\Initialisation\\DATESAUV"
 const limitgetdefval = "10mb"
 const limitputdefval = "32k"
+const maxversion = 5
 
 // Copy one file at once
 // mdate : Date to set at end (Touch file)
@@ -214,9 +215,71 @@ func copyOneFile(ctx *context) (written int64, err error) {
 	return copyFileContents(ctx.remoteinfo.ModTime(), ctx.remoteinfo.Size(), getRemotePath(ctx), *ctx.localname, ctx.limitget)
 }
 
+// exists returns whether the given file or directory exists or not
+func exists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return true, err
+}
+
+// Erase overstored file (> maxversion copies)
+func delete(path string, idx int) error {
+	return os.Remove(fmt.Sprintf("%s.%d", path, idx))
+}
+
+// Rename localfile using a free slotnumber between 0 - pred(maxversion)
+func rename(path string, idx int) error {
+	return os.Rename(path, fmt.Sprintf("%s.%d", path, idx))
+}
+
+// Will rename old localfile to protect it.
+// Will keep MAX_VERSION of the file
+func protectLocalFile(ctx *context) error {
+	for index := 0; index <= maxversion; index++ {
+		if *ctx.verbose {
+			log.Printf("step %d/%d for %s", index, maxversion, *ctx.localname)
+		}
+		if index == maxversion {
+			if *ctx.verbose {
+				log.Printf("%d versions used. Reusing V0. Delete file %s.%d", maxversion, *ctx.localname, index)
+			}
+			if err := delete(*ctx.localname, 0); err != nil {
+				return err
+			}
+			if *ctx.verbose {
+				log.Printf("%d versions used. Reusing V0. Rename file to %s.%d", maxversion, *ctx.localname, index)
+			}
+			if err := rename(*ctx.localname, 0); err != nil {
+				return err
+			}
+			return nil
+		}
+
+		filehere, err := exists(fmt.Sprintf("%s.%d", *ctx.localname, index))
+		if err != nil {
+			return err
+		}
+		if filehere {
+			continue
+		}
+		log.Printf("%d versions used. Using V%d. Rename file to %s.%d", maxversion, index, *ctx.localname, index)
+		if err := rename(*ctx.localname, index); err != nil {
+			return err
+		}
+		return nil
+	}
+	return nil
+}
+
 // No more Wildcard and selection in this Array
 // fixedCopy because the Src array is predefined
 func fixedCopy(ctx *context) (int64, error) {
+	protectLocalFile(ctx)
 	ctx.starttime = time.Now()
 	defer func() { ctx.endtime = time.Now() }()
 	bytes, err := copyOneFile(ctx)
@@ -557,7 +620,7 @@ func waitandlaunch(ctx *context) error {
 }
 
 // VersionNum : Litteral version
-const VersionNum = "1.0"
+const VersionNum = "1.1"
 
 // V 1.0 - Initial release - 2017 09 11
 func main() {
