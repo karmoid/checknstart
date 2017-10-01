@@ -216,15 +216,15 @@ func copyOneFile(ctx *context) (written int64, err error) {
 }
 
 // exists returns whether the given file or directory exists or not
-func exists(path string) (bool, error) {
-	_, err := os.Stat(path)
+func exists(path string) (bool, time.Time, error) {
+	finfo, err := os.Stat(path)
 	if err == nil {
-		return true, nil
+		return true, finfo.ModTime(), nil
 	}
 	if os.IsNotExist(err) {
-		return false, nil
+		return false, time.Now(), nil
 	}
-	return true, err
+	return false, time.Now(), err
 }
 
 // Erase overstored file (> maxversion copies)
@@ -240,31 +240,37 @@ func rename(path string, idx int) error {
 // Will rename old localfile to protect it.
 // Will keep MAX_VERSION of the file
 func protectLocalFile(ctx *context) error {
+	var olderdate = time.Now()
+	var idx = -1
 	for index := 0; index <= maxversion; index++ {
 		if *ctx.verbose {
 			log.Printf("step %d/%d for %s", index, maxversion, *ctx.localname)
 		}
 		if index == maxversion {
 			if *ctx.verbose {
-				log.Printf("%d versions used. Reusing V0. Delete file %s.%d", maxversion, *ctx.localname, index)
+				log.Printf("%d versions used. Reusing V%d. Delete file %s.%d", maxversion, idx, *ctx.localname, idx)
 			}
-			if err := delete(*ctx.localname, 0); err != nil {
+			if err := delete(*ctx.localname, idx); err != nil {
 				return err
 			}
 			if *ctx.verbose {
-				log.Printf("%d versions used. Reusing V0. Rename file to %s.%d", maxversion, *ctx.localname, index)
+				log.Printf("%d versions used. Reusing V%d. Rename file to %s.%d", maxversion, idx, *ctx.localname, idx)
 			}
-			if err := rename(*ctx.localname, 0); err != nil {
+			if err := rename(*ctx.localname, idx); err != nil {
 				return err
 			}
 			return nil
 		}
 
-		filehere, err := exists(fmt.Sprintf("%s.%d", *ctx.localname, index))
+		filehere, modtime, err := exists(fmt.Sprintf("%s.%d", *ctx.localname, index))
 		if err != nil {
 			return err
 		}
 		if filehere {
+			if modtime.Before(olderdate) {
+				olderdate = modtime
+				idx = index
+			}
 			continue
 		}
 		log.Printf("%d versions used. Using V%d. Rename file to %s.%d", maxversion, index, *ctx.localname, index)
