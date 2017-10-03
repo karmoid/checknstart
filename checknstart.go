@@ -250,7 +250,7 @@ func protectLocalFile(ctx *context) error {
 	var idx = -1
 	for index := 0; index <= maxversion; index++ {
 		if *ctx.verbose {
-			mylog.Printf("step %d/%d for %s", index, maxversion, *ctx.localname)
+			log.Printf("step %d/%d for %s", index, maxversion, *ctx.localname)
 		}
 		if index == maxversion {
 			if *ctx.verbose {
@@ -295,7 +295,7 @@ func protectRemoteFile(ctx *context) error {
 	var idx = -1
 	for index := 0; index <= maxversion; index++ {
 		if *ctx.verbose {
-			mylog.Printf("step %d/%d for %s", index, maxversion, getRemotePath(ctx))
+			log.Printf("step %d/%d for %s", index, maxversion, getRemotePath(ctx))
 		}
 		if index == maxversion {
 			if *ctx.verbose {
