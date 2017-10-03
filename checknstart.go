@@ -99,7 +99,7 @@ const backupuserdefval = "dba"
 const backuppwddefval = "sql"
 const waitingfordefval = "HKLM\\SOFTWARE\\KHEOPS\\KZX\\Initialisation\\DATESAUV"
 const limitgetdefval = "10mb"
-const limitputdefval = "32k"
+const limitputdefval = "10mb"
 const maxversion = 5
 
 // Copy one file at once
@@ -282,10 +282,58 @@ func protectLocalFile(ctx *context) error {
 	return nil
 }
 
+// Will rename old localfile to protect it.
+// Will keep MAX_VERSION of the file
+func protectRemoteFile(ctx *context) error {
+	var olderdate = time.Now()
+	var idx = -1
+	for index := 0; index <= maxversion; index++ {
+		if *ctx.verbose {
+			log.Printf("step %d/%d for %s", index, maxversion, getRemotePath(ctx))
+		}
+		if index == maxversion {
+			if *ctx.verbose {
+				log.Printf("%d versions used. Reusing V%d. Delete file %s.%d", maxversion, idx, getRemotePath(ctx), idx)
+			}
+			if err := delete(*ctx.localname, idx); err != nil {
+				return err
+			}
+			if *ctx.verbose {
+				log.Printf("%d versions used. Reusing V%d. Rename file to %s.%d", maxversion, idx, getRemotePath(ctx), idx)
+			}
+			if err := rename(*ctx.localname, idx); err != nil {
+				return err
+			}
+			return nil
+		}
+
+		filehere, modtime, err := exists(fmt.Sprintf("%s.%d", getRemotePath(ctx), index))
+		if err != nil {
+			return err
+		}
+		if filehere {
+			if modtime.Before(olderdate) {
+				olderdate = modtime
+				idx = index
+			}
+			continue
+		}
+		log.Printf("%d versions used. Using V%d. Rename file to %s.%d", maxversion, index, getRemotePath(ctx), index)
+		if err := rename(getRemotePath(ctx), index); err != nil {
+			return err
+		}
+		return nil
+	}
+	return nil
+}
+
 // No more Wildcard and selection in this Array
 // fixedCopy because the Src array is predefined
 func fixedCopy(ctx *context) (int64, error) {
-	protectLocalFile(ctx)
+	if err := protectLocalFile(ctx); err != nil {
+		log.Println("fixedCopy error ! Unable to rename localfile (ProtectIt)")
+		return -1, err
+	}
 	ctx.starttime = time.Now()
 	defer func() { ctx.endtime = time.Now() }()
 	bytes, err := copyOneFile(ctx)
@@ -343,6 +391,10 @@ func doBackupNCopy(ctx *context) error {
 	finfo, err := getFileSpec(fmt.Sprintf("%s\\%s", getTempPath(ctx), fileonly), "temp", *ctx.verbose)
 	if err != nil {
 		log.Println("doBackupNCopy error ! Unable to get file info.")
+		return err
+	}
+	if err := protectRemoteFile(ctx); err != nil {
+		log.Println("doBackupNCopy error ! Unable to rename remotefile (ProtectIt)")
 		return err
 	}
 	written, err := copyFileContents(finfo.ModTime(), finfo.Size(), fmt.Sprintf("%s\\%s", getTempPath(ctx), fileonly), getRemotePath(ctx), ctx.limitput)
@@ -626,7 +678,7 @@ func waitandlaunch(ctx *context) error {
 }
 
 // VersionNum : Litteral version
-const VersionNum = "1.1"
+const VersionNum = "1.2"
 
 // V 1.0 - Initial release - 2017 09 11
 func main() {
