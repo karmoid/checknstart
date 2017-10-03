@@ -44,6 +44,7 @@ import (
 
 	"github.com/dustin/go-humanize"
 	"github.com/efarrer/iothrottler"
+	"github.com/sirupsen/logrus"
 )
 
 // context : Store specific value to alter the program behaviour
@@ -54,6 +55,7 @@ type (
 		share          *string
 		remotename     *string
 		localname      *string
+		localempty     *string
 		cmd            *string
 		user           *string
 		pwd            *string
@@ -80,6 +82,9 @@ type (
 	}
 )
 
+// Create a new instance of the logger. You can have any number of instances.
+var mylog = logrus.New()
+
 // contexte : Hold runtime value (from commande line args)
 var contexte context
 
@@ -88,6 +93,7 @@ const dacqname = "DACQ"
 const endpointdefval = "ViewClient_Machine_Name"
 const sharedefval = "kheops"
 const remotenamedefval = "\\dacq\\base\\darwinsav.db"
+const localemptynamedefval = "c:\\b3s\\dacq\\base vierge\\darwinsav.db"
 const localnamedefval = "c:\\b3s\\dacq\\base\\darwinsav.db"
 const cmddefval = "c:\\b3s\\dacq\\application\\dacq.exe"
 const userdefval = "DACQ"
@@ -109,7 +115,7 @@ const maxversion = 5
 // bwlimit : Bandwith limit in bytes by second
 func copyFileContents(mdate time.Time, size int64, src, dst string, bwlimit uint64) (int64, error) {
 	if *contexte.verbose {
-		fmt.Printf("%s -> %s (%s)", src, dst, humanize.Bytes(uint64(size)))
+		mylog.Printf("%s -> %s (%s)", src, dst, humanize.Bytes(uint64(size)))
 	}
 	if !*contexte.verbose {
 		fmt.Print(".")
@@ -127,7 +133,7 @@ func copyFileContents(mdate time.Time, size int64, src, dst string, bwlimit uint
 		file.Close()
 		if err != nil {
 			if *contexte.verbose {
-				fmt.Print(" KO\n")
+				mylog.Print(" KO\n")
 			}
 			if !*contexte.verbose {
 				fmt.Print(".")
@@ -135,7 +141,7 @@ func copyFileContents(mdate time.Time, size int64, src, dst string, bwlimit uint
 			return
 		}
 		if *contexte.verbose {
-			fmt.Print(" OK\n")
+			mylog.Print(" OK\n")
 		}
 		if !*contexte.verbose {
 			fmt.Print(".")
@@ -160,7 +166,7 @@ func copyFileContents(mdate time.Time, size int64, src, dst string, bwlimit uint
 			err = cerr
 		}
 		if err2 := os.Chtimes(dst, mdate, mdate); err2 != nil {
-			log.Fatal(err2)
+			mylog.Fatal(err2)
 		}
 	}()
 	bytesw, err := io.Copy(out, throttledFile)
@@ -181,7 +187,7 @@ func getFiles(src string) (filesOut []os.FileInfo, errOut error) {
 	pattern := filepath.Base(src)
 	files, err := ioutil.ReadDir(filepath.Dir(src))
 	if err != nil {
-		log.Fatal(err)
+		mylog.Fatal(err)
 	}
 	for _, file := range files {
 		if res, err := filepath.Match(strings.ToLower(pattern), strings.ToLower(file.Name())); res {
@@ -244,17 +250,17 @@ func protectLocalFile(ctx *context) error {
 	var idx = -1
 	for index := 0; index <= maxversion; index++ {
 		if *ctx.verbose {
-			log.Printf("step %d/%d for %s", index, maxversion, *ctx.localname)
+			mylog.Printf("step %d/%d for %s", index, maxversion, *ctx.localname)
 		}
 		if index == maxversion {
 			if *ctx.verbose {
-				log.Printf("%d versions used. Reusing V%d. Delete file %s.%d", maxversion, idx, *ctx.localname, idx)
+				mylog.Printf("%d versions used. Reusing V%d. Delete file %s.%d", maxversion, idx, *ctx.localname, idx)
 			}
 			if err := delete(*ctx.localname, idx); err != nil {
 				return err
 			}
 			if *ctx.verbose {
-				log.Printf("%d versions used. Reusing V%d. Rename file to %s.%d", maxversion, idx, *ctx.localname, idx)
+				mylog.Printf("%d versions used. Reusing V%d. Rename file to %s.%d", maxversion, idx, *ctx.localname, idx)
 			}
 			if err := rename(*ctx.localname, idx); err != nil {
 				return err
@@ -273,7 +279,7 @@ func protectLocalFile(ctx *context) error {
 			}
 			continue
 		}
-		log.Printf("%d versions used. Using V%d. Rename file to %s.%d", maxversion, index, *ctx.localname, index)
+		mylog.Printf("%d versions used. Using V%d. Rename file to %s.%d", maxversion, index, *ctx.localname, index)
 		if err := rename(*ctx.localname, index); err != nil {
 			return err
 		}
@@ -289,17 +295,17 @@ func protectRemoteFile(ctx *context) error {
 	var idx = -1
 	for index := 0; index <= maxversion; index++ {
 		if *ctx.verbose {
-			log.Printf("step %d/%d for %s", index, maxversion, getRemotePath(ctx))
+			mylog.Printf("step %d/%d for %s", index, maxversion, getRemotePath(ctx))
 		}
 		if index == maxversion {
 			if *ctx.verbose {
-				log.Printf("%d versions used. Reusing V%d. Delete file %s.%d", maxversion, idx, getRemotePath(ctx), idx)
+				mylog.Printf("%d versions used. Reusing V%d. Delete file %s.%d", maxversion, idx, getRemotePath(ctx), idx)
 			}
 			if err := delete(*ctx.localname, idx); err != nil {
 				return err
 			}
 			if *ctx.verbose {
-				log.Printf("%d versions used. Reusing V%d. Rename file to %s.%d", maxversion, idx, getRemotePath(ctx), idx)
+				mylog.Printf("%d versions used. Reusing V%d. Rename file to %s.%d", maxversion, idx, getRemotePath(ctx), idx)
 			}
 			if err := rename(*ctx.localname, idx); err != nil {
 				return err
@@ -318,7 +324,7 @@ func protectRemoteFile(ctx *context) error {
 			}
 			continue
 		}
-		log.Printf("%d versions used. Using V%d. Rename file to %s.%d", maxversion, index, getRemotePath(ctx), index)
+		mylog.Printf("%d versions used. Using V%d. Rename file to %s.%d", maxversion, index, getRemotePath(ctx), index)
 		if err := rename(getRemotePath(ctx), index); err != nil {
 			return err
 		}
@@ -331,7 +337,7 @@ func protectRemoteFile(ctx *context) error {
 // fixedCopy because the Src array is predefined
 func fixedCopy(ctx *context) (int64, error) {
 	if err := protectLocalFile(ctx); err != nil {
-		log.Println("fixedCopy error ! Unable to rename localfile (ProtectIt)")
+		mylog.Println("fixedCopy error ! Unable to rename localfile (ProtectIt)")
 		return -1, err
 	}
 	ctx.starttime = time.Now()
@@ -352,7 +358,7 @@ func dobackup(ctx *context) error {
 		argslog = fmt.Sprintf(backupargsdefval, *ctx.backupbase, *ctx.backupuser, "***")
 	}
 	if *ctx.verbose {
-		log.Println(*ctx.backupcmd, argslog, getTempPath(ctx))
+		mylog.Println(*ctx.backupcmd, argslog, getTempPath(ctx))
 	}
 	cmd := exec.Command(*ctx.backupcmd)
 	// for idx, argument := range cmd.Args {
@@ -374,10 +380,33 @@ func dobackup(ctx *context) error {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if *ctx.verbose {
-			log.Printf("Backup exec error !\n%s", output)
+			mylog.Printf("Backup exec error !\n%s", output)
 		}
 	}
 	return err
+}
+
+// Just after gettng Remote File, we put an empty database file in place of old database file
+func emptyRemoteFile(ctx *context) error {
+	finfo, err := getFileSpec(*ctx.localempty, "empty", *ctx.verbose)
+	if err != nil {
+		mylog.Println("emptyRemoteFile error ! Unable to get empty file info.")
+		return err
+	}
+	if err := protectRemoteFile(ctx); err != nil {
+		mylog.Println("emptyRemoteFile error ! Unable to rename remotefile (ProtectIt)")
+		return err
+	}
+	written, err := copyFileContents(finfo.ModTime(), finfo.Size(), *ctx.localempty, getRemotePath(ctx), ctx.limitput)
+	if err != nil {
+		mylog.Println("emptyRemoteFile error ! Unable to copy emptyfile to remoteFile.")
+		return err
+	}
+	if written != finfo.Size() {
+		mylog.Printf("emptyRemoteFile error ! Bytes written different that Bytes to copy: %d != %d", written, finfo.Size())
+		return err
+	}
+	return nil
 }
 
 // Do backup Cmd and Copy resulting file
@@ -385,25 +414,25 @@ func doBackupNCopy(ctx *context) error {
 	ctx.starttime = time.Now()
 	fileonly := filepath.Base(*ctx.localname)
 	if err := dobackup(ctx); err != nil {
-		log.Println("doBackupNCopy error ! Unable to backup file.")
+		mylog.Println("doBackupNCopy error ! Unable to backup file.")
 		return err
 	}
 	finfo, err := getFileSpec(fmt.Sprintf("%s\\%s", getTempPath(ctx), fileonly), "temp", *ctx.verbose)
 	if err != nil {
-		log.Println("doBackupNCopy error ! Unable to get file info.")
+		mylog.Println("doBackupNCopy error ! Unable to get file info.")
 		return err
 	}
 	if err := protectRemoteFile(ctx); err != nil {
-		log.Println("doBackupNCopy error ! Unable to rename remotefile (ProtectIt)")
+		mylog.Println("doBackupNCopy error ! Unable to rename remotefile (ProtectIt)")
 		return err
 	}
 	written, err := copyFileContents(finfo.ModTime(), finfo.Size(), fmt.Sprintf("%s\\%s", getTempPath(ctx), fileonly), getRemotePath(ctx), ctx.limitput)
 	if err != nil {
-		log.Println("doBackupNCopy error ! Unable to copy TempFile to remoteFile.")
+		mylog.Println("doBackupNCopy error ! Unable to copy TempFile to remoteFile.")
 		return err
 	}
 	if written != finfo.Size() {
-		log.Printf("doBackupNCopy error ! Bytes written different that Bytes to copy: %d != %d", written, finfo.Size())
+		mylog.Printf("doBackupNCopy error ! Bytes written different that Bytes to copy: %d != %d", written, finfo.Size())
 		return err
 	}
 	if *contexte.verbose {
@@ -413,7 +442,7 @@ func doBackupNCopy(ctx *context) error {
 		if seconds == 0 {
 			seconds = 1
 		}
-		fmt.Printf("between(%v,%v)\n  REPORT Temp To Remote:\n  - Elapsed time: %v\n  - Average bandwith usage: %v/s\n",
+		mylog.Printf("between(%v,%v)\n  REPORT Temp To Remote:\n  - Elapsed time: %v\n  - Average bandwith usage: %v/s\n",
 			ctx.starttime,
 			ctx.endtime,
 			elapsedtime,
@@ -427,7 +456,7 @@ func doBackupNCopy(ctx *context) error {
 func mapDrive(address string, user string, pw string, verbose bool) ([]byte, error) {
 	exec.Command("c:\\windows\\system32\\net.exe", "use", address, "/delete").Run()
 	if verbose {
-		log.Println("net use", address, fmt.Sprintf("/user:%s", user), "*******")
+		mylog.Println("net use", address, fmt.Sprintf("/user:%s", user), "*******")
 	}
 	return exec.Command("c:\\windows\\system32\\net.exe", "use", address, fmt.Sprintf("/user:%s", user), pw).CombinedOutput()
 }
@@ -442,7 +471,7 @@ func getFileSpec(src string, lib string, verbose bool) (os.FileInfo, error) {
 		return nil, fmt.Errorf("Bad %s file info for %s", lib, src)
 	}
 	if verbose {
-		log.Println("Item:", lib,
+		mylog.Println("Item:", lib,
 			"file:", files[0].Name(),
 			"size:", humanize.Bytes(uint64(files[0].Size())),
 			"bytesized:", files[0].Size(),
@@ -457,7 +486,7 @@ func remoteFileHere(ctx *context) error {
 		out, err := mapDrive(fmt.Sprintf("\\\\%s\\%s", *ctx.endpoint, *ctx.share), *ctx.user, *ctx.pwd, *ctx.verbose)
 		if err != nil {
 			if *ctx.verbose {
-				log.Println(string(out))
+				mylog.Println(string(out))
 			}
 			return fmt.Errorf("Can't map remote share on \\\\%s\\%s", *ctx.endpoint, *ctx.share)
 		}
@@ -482,7 +511,7 @@ func compareFileAge(ctx *context) (bool, error) {
 	ctx.refreshneed = rtime.After(ltime)
 	if ctx.refreshneed {
 		if *ctx.verbose {
-			log.Printf("File need to be refreshed: %s > %s", rtime, ltime)
+			mylog.Printf("File need to be refreshed: %s > %s", rtime, ltime)
 		}
 	}
 	return ctx.refreshneed, nil
@@ -495,12 +524,13 @@ func setFlagList(ctx *context) {
 	ctx.share = flag.String("share", "", fmt.Sprintf("Share name on endpoint [%s]", sharedefval))
 	ctx.remotename = flag.String("remotefile", "", fmt.Sprintf("Source filename to check & get (no wildcard) [%s]", remotenamedefval))
 	ctx.localname = flag.String("localfile", "", fmt.Sprintf("Target Filename for copy (no wildcard) [%s]", localnamedefval))
+	ctx.localempty = flag.String("localempty", "", fmt.Sprintf("Target Filename for empty database file (no wildcard) [%s]", localemptynamedefval))
 	ctx.cmd = flag.String("cmd", "", fmt.Sprintf("Target cmd when ready [%s]", cmddefval))
 	ctx.user = flag.String("user", "", fmt.Sprintf("User account to use share on endpoint [%s]", userdefval))
 	ctx.pwd = flag.String("pwd", "", "Password account to use share on endpoint [***]")
 	ctx.limitgetstring = flag.String("getrate", "", fmt.Sprintf("Download bytes per second limit [%s]", limitgetdefval))
 	ctx.limitputstring = flag.String("putrate", "", fmt.Sprintf("Upload bytes per second limit [%s]", limitputdefval))
-	ctx.verbose = flag.Bool("verbose", false, "Verbose mode")
+	ctx.verbose = flag.Bool("verbose", true, "Verbose mode")
 	// gestion du backup SQL Anywhere
 	ctx.backupcmd = flag.String("sqlcmd", "", fmt.Sprintf("Backup tools full path [%s]", backupcmddefval))
 	ctx.backupargs = flag.String("sqlarg", "", "Backup tools source args [dbbackup default args]")
@@ -544,6 +574,9 @@ func processArgs(ctx *context) (err error) {
 		}
 		if *ctx.localname == "" {
 			*ctx.localname = localnamedefval
+		}
+		if *ctx.localempty == "" {
+			*ctx.localempty = localemptynamedefval
 		}
 		if *ctx.cmd == "" {
 			*ctx.cmd = cmddefval
@@ -641,34 +674,34 @@ func waitandlaunch(ctx *context) error {
 	var remainingsecs = *ctx.howlong
 	firstdone, err := sqlUpdated(ctx)
 	if err != nil {
-		log.Println("error in first sqlUpdated?", err)
+		mylog.Println("error in first sqlUpdated?", err)
 		return fmt.Errorf("Unable to get SqlUpdated waitingfor flag [%s]", *ctx.waitingfor)
 	}
 	if firstdone {
-		fmt.Println("Current date is already OK in Registry.")
+		mylog.Println("Current date is already OK in Registry.")
 		if *ctx.tocancel {
-			fmt.Println("TimeOut will cancel, so return now.")
+			mylog.Println("TimeOut will cancel, so return now.")
 			return nil
 		}
-		fmt.Println("Waiting until timeout.")
+		mylog.Println("Waiting until timeout.")
 	}
 	for {
 		time.Sleep(1 * time.Second)
 		remainingsecs--
 		done, err := sqlUpdated(ctx)
 		if err != nil {
-			log.Println("error in sqlUpdated?", err)
+			mylog.Println("error in sqlUpdated?", err)
 			return fmt.Errorf("Unable to get SqlUpdated waitingfor flag [%s], Remains %d second(s)", *ctx.waitingfor, remainingsecs)
 		}
 		if done && !firstdone {
-			log.Println("Current date is OK in Registry")
+			mylog.Println("Current date is OK in Registry")
 			return doBackupNCopy(ctx)
 		}
 		if *ctx.verbose {
 			log.Printf("Sleeping 1 second, remaining %d second(s)", remainingsecs)
 		}
 		if remainingsecs <= 0 {
-			log.Printf("No update in registry. %d second(s) elapsed.", *ctx.howlong)
+			mylog.Printf("No update in registry. %d second(s) elapsed.", *ctx.howlong)
 			if !*ctx.tocancel {
 				return doBackupNCopy(ctx)
 			}
@@ -684,27 +717,36 @@ const VersionNum = "1.2"
 func main() {
 	fmt.Printf("checknstart - Check and start - C.m. 2017 - V%s\n", VersionNum)
 
+	file, err := os.OpenFile("checknstart.log", os.O_APPEND|os.O_CREATE, 0755) // For read access.
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+	// The API for setting attributes is a little different than the package level
+	// exported logger. See Godoc.
+	mylog.Out = file
+
 	// Récupération des arguments de base (Variable d'environnement ou Argument en ligne de commande)
 	if err := processArgs(&contexte); err != nil {
-		fmt.Println(err)
+		mylog.Println(err)
 		os.Exit(1) // User error (Usage)
 	}
 
 	// le fichier distant est il accessible
 	if err := remoteFileHere(&contexte); err != nil {
-		fmt.Println(err)
+		mylog.Println(err)
 		os.Exit(2) // File not found
 	}
 
 	if *contexte.verbose {
-		log.Println("processing on local device", os.Getenv("COMPUTERNAME"),
+		mylog.Println("processing on local device", os.Getenv("COMPUTERNAME"),
 			"file comparison versus endpoint", *contexte.endpoint)
 	}
 
 	//	A-t-on besoin de récupérer la base de données remote en local
 	docopy, err := compareFileAge(&contexte)
 	if err != nil {
-		fmt.Println(err)
+		mylog.Println(err)
 		os.Exit(2) // File not found
 	}
 
@@ -712,7 +754,7 @@ func main() {
 	if docopy {
 		bytes, err := fixedCopy(&contexte)
 		if err != nil {
-			fmt.Println(err)
+			mylog.Println(err)
 			os.Exit(3) // Copy error
 		}
 		elapsedtime := contexte.endtime.Sub(contexte.starttime)
@@ -721,21 +763,24 @@ func main() {
 			seconds = 1
 		}
 		if *contexte.verbose {
-			fmt.Printf("between(%v,%v)\n  REPORT:\n  - Elapsed time: %v\n  - Average bandwith usage: %v/s\n",
+			mylog.Printf("between(%v,%v)\n  REPORT:\n  - Elapsed time: %v\n  - Average bandwith usage: %v/s\n",
 				contexte.starttime,
 				contexte.endtime,
 				elapsedtime,
 				humanize.Bytes(uint64(bytes/seconds)))
 		}
-		fmt.Println("copy done.")
+		mylog.Println("copy done.")
+		if err := emptyRemoteFile(&contexte); err != nil {
+			mylog.Printf("Remotefile can't be empty ! error: %s", err)
+		}
 	} else {
-		fmt.Println("no copy needed.")
+		mylog.Println("no copy needed.")
 	}
-	fmt.Printf("Starting [%s]", *contexte.cmd)
+	mylog.Printf("Starting [%s]", *contexte.cmd)
 	exec.Command(*contexte.cmd).Start()
-	fmt.Printf("[%s] started", *contexte.cmd)
+	mylog.Printf("[%s] started", *contexte.cmd)
 	if err := waitandlaunch(&contexte); err != nil {
-		log.Printf("WaitAndLaunch error:%v", err)
+		mylog.Printf("WaitAndLaunch error:%v", err)
 		os.Exit(4)
 	}
 	os.Exit(0)
