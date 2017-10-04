@@ -26,6 +26,7 @@
 //
 // checknstart.exe -verbose -localfile c:\tools\dacqtest\DARWINSAV.DB -remotefile c:\tools\dacqtest\DARWINSAV.DB.bak -getrate 64k -putrate 64k -cmd calc.exe -delay 6 -regkey "HKCU\Volatile Environment\1\test" -sqlcmd c:\windows\system32\cmd.exe -sqlarg "copy c:\tools\dacqtest\darwinsav.db"
 // checknstart.exe -verbose -localfile c:\tools\dacqtest\DARWINSAV.DB -remotefile c:\tools\dacqtest\DARWINSAV.DB.bak -getrate 640k -putrate 640k -cmd calc.exe -delay 6 -regkey "HKCU\Volatile Environment\2\test" -sqlcmd c:\windows\system32\cmd.exe -sqlarg "/c copy c:\tools\dacqtest\darwinsav.db"
+// checknstart.exe -verbose -localfile c:\tools\dacqloc\DARWINSAV.DB -remotefile c:\tools\dacqphy\DARWINSAV.DB.bak -getrate 640k -putrate 640k -cmd calc.exe -delay 6 -regkey "HKCU\Volatile Environment\2\test" -sqlcmd c:\windows\system32\cmd.exe -sqlarg "/c copy c:\tools\dacqloc\darwinsav.db"
 package main
 
 import (
@@ -256,6 +257,9 @@ func protectLocalFile(ctx *context) error {
 			if *ctx.verbose {
 				mylog.Printf("%d versions used. Reusing V%d. Delete file %s.%d", maxversion, idx, *ctx.localname, idx)
 			}
+			if err := os.Chmod(*ctx.localname, 0600); err != nil {
+				return err
+			}
 			if err := delete(*ctx.localname, idx); err != nil {
 				return err
 			}
@@ -301,13 +305,16 @@ func protectRemoteFile(ctx *context) error {
 			if *ctx.verbose {
 				mylog.Printf("%d versions used. Reusing V%d. Delete file %s.%d", maxversion, idx, getRemotePath(ctx), idx)
 			}
-			if err := delete(*ctx.localname, idx); err != nil {
+			if err := os.Chmod(getRemotePath(ctx), 0600); err != nil {
+				return err
+			}
+			if err := delete(getRemotePath(ctx), idx); err != nil {
 				return err
 			}
 			if *ctx.verbose {
 				mylog.Printf("%d versions used. Reusing V%d. Rename file to %s.%d", maxversion, idx, getRemotePath(ctx), idx)
 			}
-			if err := rename(*ctx.localname, idx); err != nil {
+			if err := rename(getRemotePath(ctx), idx); err != nil {
 				return err
 			}
 			return nil
@@ -711,9 +718,13 @@ func waitandlaunch(ctx *context) error {
 }
 
 // VersionNum : Litteral version
-const VersionNum = "1.2"
+const VersionNum = "1.3"
 
 // V 1.0 - Initial release - 2017 09 11
+// V 1.1 - Ajout de x Versions du fichier avant écrasement
+// V 1.2 - On copie à pleine vitesse dans les 2 sens - Correction du File Rotate
+// V1.3 - Correction apportée si les fichiers sont en RO (avant écrasement) - On met un fichier vide en Physique après récupération de la base dégradée. - Ajout de log dans fichier
+
 func main() {
 	fmt.Printf("checknstart - Check and start - C.m. 2017 - V%s\n", VersionNum)
 
