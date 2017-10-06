@@ -26,7 +26,7 @@
 //
 // checknstart.exe -verbose -localfile c:\tools\dacqtest\DARWINSAV.DB -remotefile c:\tools\dacqtest\DARWINSAV.DB.bak -getrate 64k -putrate 64k -cmd calc.exe -delay 6 -regkey "HKCU\Volatile Environment\1\test" -sqlcmd c:\windows\system32\cmd.exe -sqlarg "copy c:\tools\dacqtest\darwinsav.db"
 // checknstart.exe -verbose -localfile c:\tools\dacqtest\DARWINSAV.DB -remotefile c:\tools\dacqtest\DARWINSAV.DB.bak -getrate 640k -putrate 640k -cmd calc.exe -delay 6 -regkey "HKCU\Volatile Environment\2\test" -sqlcmd c:\windows\system32\cmd.exe -sqlarg "/c copy c:\tools\dacqtest\darwinsav.db"
-// checknstart.exe -verbose -localfile c:\tools\dacqloc\DARWINSAV.DB -remotefile c:\tools\dacqphy\DARWINSAV.DB.bak -getrate 640k -putrate 640k -cmd calc.exe -delay 6 -regkey "HKCU\Volatile Environment\2\test" -sqlcmd c:\windows\system32\cmd.exe -sqlarg "/c copy c:\tools\dacqloc\darwinsav.db"
+// checknstart.exe -verbose -localfile c:\tools\dacqloc\DARWINSAV.DB -remotefile c:\tools\dacqphy\DARWINSAV.DB.bak -getrate 640k -putrate 640k -cmd notepad.exe -delay 6 -regkey "HKCU\Volatile Environment\2\test" -sqlcmd c:\windows\system32\cmd.exe -sqlarg "/c copy c:\tools\dacqloc\darwinsav.db"
 package main
 
 import (
@@ -48,10 +48,10 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// context : Store specific value to alter the program behaviour
+// contextCache : Store specific value to alter the program behaviour
 // Like an Args container
 type (
-	context struct {
+	contextCache struct {
 		endpoint       *string
 		share          *string
 		remotename     *string
@@ -80,6 +80,7 @@ type (
 		refreshneed    bool
 		starttime      time.Time
 		endtime        time.Time
+		cmdhandle      *exec.Cmd
 	}
 )
 
@@ -87,7 +88,7 @@ type (
 var mylog = logrus.New()
 
 // contexte : Hold runtime value (from commande line args)
-var contexte context
+var contexte contextCache
 
 // Valeur par défaut si le paramètre est non renseigné et setdefault "activé"
 const dacqname = "DACQ"
@@ -108,6 +109,7 @@ const waitingfordefval = "HKLM\\SOFTWARE\\KHEOPS\\KZX\\Initialisation\\DATESAUV"
 const limitgetdefval = "10mb"
 const limitputdefval = "10mb"
 const maxversion = 5
+const spyLoop = 5
 
 // Copy one file at once
 // mdate : Date to set at end (Touch file)
@@ -204,7 +206,7 @@ func getFiles(src string) (filesOut []os.FileInfo, errOut error) {
 }
 
 // Get remote path for file (with Net Use or Not)
-func getRemotePath(ctx *context) string {
+func getRemotePath(ctx *contextCache) string {
 	// si on veut spécifier un path local (pas net use)
 	if *ctx.endpoint == "" && *ctx.share == "" {
 		return fmt.Sprintf("%s", *ctx.remotename)
@@ -213,12 +215,12 @@ func getRemotePath(ctx *context) string {
 }
 
 // Get Path for tempfiles
-func getTempPath(ctx *context) string {
+func getTempPath(ctx *contextCache) string {
 	return ctx.temp
 }
 
 // Copy one file to another file
-func copyOneFile(ctx *context) (written int64, err error) {
+func copyOneFile(ctx *contextCache) (written int64, err error) {
 	return copyFileContents(ctx.remoteinfo.ModTime(), ctx.remoteinfo.Size(), getRemotePath(ctx), *ctx.localname, ctx.limitget)
 }
 
@@ -246,7 +248,7 @@ func rename(path string, idx int) error {
 
 // Will rename old localfile to protect it.
 // Will keep MAX_VERSION of the file
-func protectLocalFile(ctx *context) error {
+func protectLocalFile(ctx *contextCache) error {
 	var olderdate = time.Now()
 	var idx = -1
 	for index := 0; index <= maxversion; index++ {
@@ -294,7 +296,7 @@ func protectLocalFile(ctx *context) error {
 
 // Will rename old localfile to protect it.
 // Will keep MAX_VERSION of the file
-func protectRemoteFile(ctx *context) error {
+func protectRemoteFile(ctx *contextCache) error {
 	var olderdate = time.Now()
 	var idx = -1
 	for index := 0; index <= maxversion; index++ {
@@ -342,7 +344,7 @@ func protectRemoteFile(ctx *context) error {
 
 // No more Wildcard and selection in this Array
 // fixedCopy because the Src array is predefined
-func fixedCopy(ctx *context) (int64, error) {
+func fixedCopy(ctx *contextCache) (int64, error) {
 	if err := protectLocalFile(ctx); err != nil {
 		mylog.Println("fixedCopy error ! Unable to rename localfile (ProtectIt)")
 		return -1, err
@@ -357,7 +359,7 @@ func fixedCopy(ctx *context) (int64, error) {
 }
 
 // Use Backupcmd to do database backup
-func dobackup(ctx *context) error {
+func dobackup(ctx *contextCache) error {
 	args := *ctx.backupargs
 	argslog := *ctx.backupargs
 	if args == backupargsdefval {
@@ -394,7 +396,7 @@ func dobackup(ctx *context) error {
 }
 
 // Just after gettng Remote File, we put an empty database file in place of old database file
-func emptyRemoteFile(ctx *context) error {
+func emptyRemoteFile(ctx *contextCache) error {
 	finfo, err := getFileSpec(*ctx.localempty, "empty", *ctx.verbose)
 	if err != nil {
 		mylog.Println("emptyRemoteFile error ! Unable to get empty file info.")
@@ -417,7 +419,7 @@ func emptyRemoteFile(ctx *context) error {
 }
 
 // Do backup Cmd and Copy resulting file
-func doBackupNCopy(ctx *context) error {
+func doBackupNCopy(ctx *contextCache) error {
 	ctx.starttime = time.Now()
 	fileonly := filepath.Base(*ctx.localname)
 	if err := dobackup(ctx); err != nil {
@@ -449,11 +451,15 @@ func doBackupNCopy(ctx *context) error {
 		if seconds == 0 {
 			seconds = 1
 		}
-		mylog.Printf("between(%v,%v)\n  REPORT Temp To Remote:\n  - Elapsed time: %v\n  - Average bandwith usage: %v/s\n",
-			ctx.starttime,
-			ctx.endtime,
-			elapsedtime,
-			humanize.Bytes(uint64(written/seconds)))
+		mylog.WithFields(logrus.Fields{
+			"size":           written,
+			"sizeHuman":      humanize.Bytes(uint64(written)),
+			"elapsed":        fmt.Sprintf("%v", elapsedtime),
+			"avgBandwithUse": humanize.Bytes(uint64(written / seconds)),
+		}).Info(fmt.Sprintf("between(%v,%v)",
+			contexte.starttime,
+			contexte.endtime,
+		))
 	}
 
 	return nil
@@ -488,7 +494,7 @@ func getFileSpec(src string, lib string, verbose bool) (os.FileInfo, error) {
 }
 
 // Check if remote file exist
-func remoteFileHere(ctx *context) error {
+func remoteFileHere(ctx *contextCache) error {
 	if *ctx.share != "" || *ctx.endpoint != "" {
 		out, err := mapDrive(fmt.Sprintf("\\\\%s\\%s", *ctx.endpoint, *ctx.share), *ctx.user, *ctx.pwd, *ctx.verbose)
 		if err != nil {
@@ -504,7 +510,7 @@ func remoteFileHere(ctx *context) error {
 }
 
 // on va comparer les dates des fichiers sources et Destination
-func compareFileAge(ctx *context) (bool, error) {
+func compareFileAge(ctx *contextCache) (bool, error) {
 	var ltime, rtime time.Time
 	finfo, err := getFileSpec(*ctx.localname, "local", *ctx.verbose)
 	if err != nil {
@@ -525,7 +531,7 @@ func compareFileAge(ctx *context) (bool, error) {
 }
 
 // Prepare Command Line Args parsing
-func setFlagList(ctx *context) {
+func setFlagList(ctx *contextCache) {
 	ctx.setdefault = flag.Bool("setdefault", false, "Must be use default value if empty")
 	ctx.endpoint = flag.String("endpoint", "", fmt.Sprintf("Physical remote device (versus current VDI) [env %s]", endpointdefval))
 	ctx.share = flag.String("share", "", fmt.Sprintf("Share name on endpoint [%s]", sharedefval))
@@ -552,7 +558,7 @@ func setFlagList(ctx *context) {
 }
 
 // Check args and return error if anything is wrong
-func processArgs(ctx *context) (err error) {
+func processArgs(ctx *contextCache) (err error) {
 	setFlagList(&contexte)
 
 	if isWildcard(*ctx.localname) {
@@ -641,7 +647,7 @@ func processArgs(ctx *context) (err error) {
 }
 
 // Check if Registry Key (regkey args) is modified with current date
-func sqlUpdated(ctx *context) (bool, error) {
+func sqlUpdated(ctx *contextCache) (bool, error) {
 	var regkey registry.Key
 	var err error
 	var keyvalue registry.Key
@@ -677,7 +683,7 @@ func sqlUpdated(ctx *context) (bool, error) {
 }
 
 // Wait for update and Launch copy if needed
-func waitandlaunch(ctx *context) error {
+func waitandlaunch(ctx *contextCache) error {
 	var remainingsecs = *ctx.howlong
 	firstdone, err := sqlUpdated(ctx)
 	if err != nil {
@@ -717,13 +723,59 @@ func waitandlaunch(ctx *context) error {
 	}
 }
 
+func spyProcess(ctx *contextCache) (bool, error) {
+	if *ctx.verbose {
+		log.Printf("Entering in spymode (loop every %d seconds)", spyLoop)
+	}
+	for {
+		//		fmt.Printf("on attend 5 secondes. %s", *ctx.cmdhandle.ProcessState)
+		time.Sleep(spyLoop * time.Second)
+		//		fmt.Println("on vient d'attendre 5 secondes.")
+		_, err := os.FindProcess(ctx.cmdhandle.Process.Pid)
+		if err != nil {
+			//			fmt.Println("On a pas trouve le process.")
+			mylog.Printf("spyProcess Failed to find %s process: %v. Maybe already terminated", ctx.cmdhandle.Path, err)
+			return false, nil
+		}
+		//		fmt.Printf("On a trouve le process. %d", p2.Pid)
+		if ctx.cmdhandle.ProcessState != nil && ctx.cmdhandle.ProcessState.Exited() {
+			//			fmt.Println("Exited")
+			return false, nil
+		}
+
+		//		fmt.Printf("Connectivite avec le endpoint. %s", getRemotePath(ctx))
+		if _, err := getFileSpec(getRemotePath(ctx), "spyprocess", *ctx.verbose); err != nil {
+			mylog.Printf("spyProcess error on getFileSpec for %s", getRemotePath(ctx))
+			return true, nil
+		}
+	}
+}
+
+func startCmd(ctx *contextCache) (int, error) {
+	// mylog.Printf("Starting [%s]", *ctx.cmd)
+	ctx.cmdhandle = exec.Command(*ctx.cmd)
+
+	if err := ctx.cmdhandle.Start(); err != nil {
+		mylog.Printf("[%s] not started returns: %v", *ctx.cmd, err)
+		return 6, err
+	}
+	mylog.Printf("[%s] started with PID: %d", *ctx.cmd, ctx.cmdhandle.Process.Pid)
+
+	if err := ctx.cmdhandle.Wait(); err != nil {
+		mylog.Printf("[%s] Wait returns: %v", *ctx.cmd, err)
+		return 6, err
+	}
+	return 0, nil
+}
+
 // VersionNum : Litteral version
 const VersionNum = "1.3"
 
 // V 1.0 - Initial release - 2017 09 11
 // V 1.1 - Ajout de x Versions du fichier avant écrasement
 // V 1.2 - On copie à pleine vitesse dans les 2 sens - Correction du File Rotate
-// V1.3 - Correction apportée si les fichiers sont en RO (avant écrasement) - On met un fichier vide en Physique après récupération de la base dégradée. - Ajout de log dans fichier
+// V 1.3 - Correction apportée si les fichiers sont en RO (avant écrasement) - On met un fichier vide en Physique après récupération de la base dégradée. - Ajout de log dans fichier
+// V 1.4 - Surveillance de la connexion avec le endpoint. Arrêt de process DACQ.exe si perte de connexion
 
 func main() {
 	fmt.Printf("checknstart - Check and start - C.m. 2017 - V%s\n", VersionNum)
@@ -774,11 +826,15 @@ func main() {
 			seconds = 1
 		}
 		if *contexte.verbose {
-			mylog.Printf("between(%v,%v)\n  REPORT:\n  - Elapsed time: %v\n  - Average bandwith usage: %v/s\n",
+			mylog.WithFields(logrus.Fields{
+				"size":           bytes,
+				"sizeHuman":      humanize.Bytes(uint64(bytes)),
+				"elapsed":        fmt.Sprintf("%v", elapsedtime),
+				"AvgBandwithUse": humanize.Bytes(uint64(bytes / seconds)),
+			}).Info(fmt.Sprintf("between(%v,%v)",
 				contexte.starttime,
 				contexte.endtime,
-				elapsedtime,
-				humanize.Bytes(uint64(bytes/seconds)))
+			))
 		}
 		mylog.Println("copy done.")
 		if err := emptyRemoteFile(&contexte); err != nil {
@@ -787,12 +843,27 @@ func main() {
 	} else {
 		mylog.Println("no copy needed.")
 	}
-	mylog.Printf("Starting [%s]", *contexte.cmd)
-	exec.Command(*contexte.cmd).Start()
-	mylog.Printf("[%s] started", *contexte.cmd)
+
+	go startCmd(&contexte)
+
+	// mylog.Printf("[%s] started", *contexte.cmd)
 	if err := waitandlaunch(&contexte); err != nil {
 		mylog.Printf("WaitAndLaunch error:%v", err)
 		os.Exit(4)
 	}
+
+	action, err := spyProcess(&contexte)
+	if err != nil {
+		mylog.Printf("spyProcess returns: %v", err)
+		os.Exit(7)
+	}
+	if action {
+		if err := contexte.cmdhandle.Process.Kill(); err != nil {
+			mylog.Printf("Kill process returns: %v", err)
+			os.Exit(5)
+		}
+		mylog.Println("Has killed process. No connectivity with endpoint")
+	}
+
 	os.Exit(0)
 }

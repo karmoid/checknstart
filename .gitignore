@@ -22,6 +22,9 @@ _testmain.go
 *.exe
 *.test
 *.prof
+*.log
+debug
+
 
 # =========================
 # Operating System Files
