@@ -35,6 +35,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -720,6 +721,10 @@ func waitandlaunch(ctx *contextCache) error {
 			}
 			return nil
 		}
+		if ctx.cmdhandle.ProcessState != nil && ctx.cmdhandle.ProcessState.Exited() {
+			mylog.Printf("External program closed - Stopping loop. No Copy. %d second(s) elapsed.", *ctx.howlong)
+			return nil
+		}
 	}
 }
 
@@ -731,23 +736,29 @@ func spyProcess(ctx *contextCache) (bool, error) {
 		//		fmt.Printf("on attend 5 secondes. %s", *ctx.cmdhandle.ProcessState)
 		time.Sleep(spyLoop * time.Second)
 		//		fmt.Println("on vient d'attendre 5 secondes.")
-		_, err := os.FindProcess(ctx.cmdhandle.Process.Pid)
-		if err != nil {
-			//			fmt.Println("On a pas trouve le process.")
-			mylog.Printf("spyProcess Failed to find %s process: %v. Maybe already terminated", ctx.cmdhandle.Path, err)
-			return false, nil
-		}
+		// _, err := os.FindProcess(ctx.cmdhandle.Process.Pid)
+		// if err != nil {
+		// 	//			fmt.Println("On a pas trouve le process.")
+		// 	mylog.Printf("spyProcess Failed to find %s process: %v. Maybe already terminated", ctx.cmdhandle.Path, err)
+		// 	return false, nil
+		// }
 		//		fmt.Printf("On a trouve le process. %d", p2.Pid)
 		if ctx.cmdhandle.ProcessState != nil && ctx.cmdhandle.ProcessState.Exited() {
-			//			fmt.Println("Exited")
 			return false, nil
 		}
 
 		//		fmt.Printf("Connectivite avec le endpoint. %s", getRemotePath(ctx))
-		if _, err := getFileSpec(getRemotePath(ctx), "spyprocess", *ctx.verbose); err != nil {
-			mylog.Printf("spyProcess error on getFileSpec for %s", getRemotePath(ctx))
+		conn, err := net.Dial("tcp", fmt.Sprintf("%s:445", *ctx.endpoint))
+		if err != nil {
+			fmt.Println("Connection error:", err)
+			mylog.Printf("tcp checking (connectivity) on SMB %s:445 - Unreachable", *ctx.endpoint)
 			return true, nil
 		}
+		conn.Close()
+
+		// if _, err := getFileSpec(getRemotePath(ctx), "spyprocess", *ctx.verbose); err != nil {
+		// 	mylog.Printf("spyProcess error on getFileSpec for %s", getRemotePath(ctx))
+		// }
 	}
 }
 
