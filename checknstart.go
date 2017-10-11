@@ -27,6 +27,8 @@
 // checknstart.exe -verbose -localfile c:\tools\dacqtest\DARWINSAV.DB -remotefile c:\tools\dacqtest\DARWINSAV.DB.bak -getrate 64k -putrate 64k -cmd calc.exe -delay 6 -regkey "HKCU\Volatile Environment\1\test" -sqlcmd c:\windows\system32\cmd.exe -sqlarg "copy c:\tools\dacqtest\darwinsav.db"
 // checknstart.exe -verbose -localfile c:\tools\dacqtest\DARWINSAV.DB -remotefile c:\tools\dacqtest\DARWINSAV.DB.bak -getrate 640k -putrate 640k -cmd calc.exe -delay 6 -regkey "HKCU\Volatile Environment\2\test" -sqlcmd c:\windows\system32\cmd.exe -sqlarg "/c copy c:\tools\dacqtest\darwinsav.db"
 // checknstart.exe -verbose -localfile c:\tools\dacqloc\DARWINSAV.DB -remotefile c:\tools\dacqphy\DARWINSAV.DB.bak -getrate 640k -putrate 640k -cmd notepad.exe -delay 6 -regkey "HKCU\Volatile Environment\2\test" -sqlcmd c:\windows\system32\cmd.exe -sqlarg "/c copy c:\tools\dacqloc\darwinsav.db"
+// checknstart.exe -verbose -localfile c:\tools\dacqloc\DARWINSAV.DB -cmd notepad.exe -delay 60 -regkey "HKCU\Volatile Environment\2\test" -sqlcmd c:\windows\system32\cmd.exe -sqlarg "/c copy c:\tools\dacqloc\darwinsav.db"
+// checknstart.exe -verbose -localfile c:\tools\dacqloc\DARWINSAV.DB -cmd notepad.exe -delay 60 -regkey "HKCU\Volatile Environment\1\test" -sqlcmd c:\windows\system32\cmd.exe -sqlarg "/c copy c:\tools\dacqloc\darwinsav.db" -endpoint LFRHQBU400619 -setdefault -user emea\chauffourm -pwd xxxxx
 package main
 
 import (
@@ -111,6 +113,9 @@ const limitgetdefval = "10mb"
 const limitputdefval = "10mb"
 const maxversion = 5
 const spyLoop = 5
+const portCheck = 445
+const cleanlog = 10 // Versions number. Could be also Days number
+const logFileName = "checknstart"
 
 // Copy one file at once
 // mdate : Date to set at end (Touch file)
@@ -748,12 +753,13 @@ func spyProcess(ctx *contextCache) (bool, error) {
 		}
 
 		//		fmt.Printf("Connectivite avec le endpoint. %s", getRemotePath(ctx))
-		conn, err := net.Dial("tcp", fmt.Sprintf("%s:445", *ctx.endpoint))
+		conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", *ctx.endpoint, portCheck))
 		if err != nil {
 			fmt.Println("Connection error:", err)
-			mylog.Printf("tcp checking (connectivity) on SMB %s:445 - Unreachable", *ctx.endpoint)
+			mylog.Printf("tcp checking (connectivity) on SMB %s:%d - Unreachable", *ctx.endpoint, portCheck)
 			return true, nil
 		}
+		mylog.Printf("Connection TCP on %s with port %d successful @ip(%s)", *ctx.endpoint, portCheck, conn.RemoteAddr())
 		conn.Close()
 
 		// if _, err := getFileSpec(getRemotePath(ctx), "spyprocess", *ctx.verbose); err != nil {
@@ -779,8 +785,31 @@ func startCmd(ctx *contextCache) (int, error) {
 	return 0, nil
 }
 
+func cleanLogs(ctx *contextCache) {
+	files, err := getFiles(fmt.Sprintf("%s*.log", logFileName))
+	if err != nil {
+		mylog.Println("cleanlogs error ! Unable to get log files info.")
+		return
+	}
+	filesToRemove := len(files) - cleanlog
+	if filesToRemove > 0 && *ctx.verbose {
+		mylog.Printf("Cleaning %d on %d files.", filesToRemove, len(files))
+	}
+	for idx, file := range files {
+		// filesOut = append(filesOut, file)
+		// ctx.estimatesize += uint64(file.Size())
+		if idx < filesToRemove {
+			if *ctx.verbose {
+				mylog.Printf("Cleaning log (%d) %s", idx, file.Name())
+			}
+			os.Remove(file.Name())
+		}
+	}
+
+}
+
 // VersionNum : Litteral version
-const VersionNum = "1.3"
+const VersionNum = "1.4"
 
 // V 1.0 - Initial release - 2017 09 11
 // V 1.1 - Ajout de x Versions du fichier avant écrasement
@@ -790,8 +819,8 @@ const VersionNum = "1.3"
 
 func main() {
 	fmt.Printf("checknstart - Check and start - C.m. 2017 - V%s\n", VersionNum)
-
-	file, err := os.OpenFile("checknstart.log", os.O_APPEND|os.O_CREATE, 0755) // For read access.
+	tag := time.Now().Format("20060102-030405")
+	file, err := os.OpenFile(fmt.Sprintf("%s-%s.log", logFileName, tag), os.O_APPEND|os.O_CREATE, 0755) // For read access.
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -875,6 +904,6 @@ func main() {
 		}
 		mylog.Println("Has killed process. No connectivity with endpoint")
 	}
-
+	cleanLogs(&contexte)
 	os.Exit(0)
 }
