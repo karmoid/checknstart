@@ -681,7 +681,7 @@ func sqlUpdated(ctx *contextCache) (bool, error) {
 	defer keyvalue.Close()
 	s, _, err := keyvalue.GetStringValue(slices[len(slices)-1])
 	if err != nil {
-		return false, err
+		return false, nil
 	}
 	// log.Println("lu en base de registre:", s)
 	// log.Println("comparaison:", time.Now().Local().Format("02/01/2006"))
