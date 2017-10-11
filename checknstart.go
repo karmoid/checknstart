@@ -676,7 +676,7 @@ func sqlUpdated(ctx *contextCache) (bool, error) {
 		return false, fmt.Errorf("Bad Registry Path - Need (HKCU|HKLM) then (Root) then (Key) [%s]", *ctx.waitingfor)
 	}
 	if err != nil {
-		return false, err
+		return false, nil
 	}
 	defer keyvalue.Close()
 	s, _, err := keyvalue.GetStringValue(slices[len(slices)-1])
