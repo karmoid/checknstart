@@ -174,8 +174,9 @@ func copyFileContents(mdate time.Time, size int64, src, dst string, bwlimit uint
 		if err == nil {
 			err = cerr
 		}
+		// TODO: Tester l'erreur et retourner un exception si problème
 		if err2 := os.Chtimes(dst, mdate, mdate); err2 != nil {
-			mylog.Fatal(err2)
+			err = err2
 		}
 	}()
 	bytesw, err := io.Copy(out, throttledFile)
@@ -196,7 +197,7 @@ func getFiles(src string) (filesOut []os.FileInfo, errOut error) {
 	pattern := filepath.Base(src)
 	files, err := ioutil.ReadDir(filepath.Dir(src))
 	if err != nil {
-		mylog.Fatal(err)
+		return nil, err
 	}
 	for _, file := range files {
 		if res, err := filepath.Match(strings.ToLower(pattern), strings.ToLower(file.Name())); res {
@@ -727,32 +728,23 @@ func waitandlaunch(ctx *contextCache) error {
 			return nil
 		}
 		if ctx.cmdhandle.ProcessState != nil && ctx.cmdhandle.ProcessState.Exited() {
-			mylog.Printf("External program closed - Stopping loop. No Copy. %d second(s) elapsed.", *ctx.howlong)
+			mylog.Println("External program closed - Stopping loop. No Copy.")
 			return nil
 		}
 	}
 }
 
+// Mise en surveillance du process que l'on a démarré + surveillance de la disponibilité SMB (port 445)
 func spyProcess(ctx *contextCache) (bool, error) {
 	if *ctx.verbose {
 		log.Printf("Entering in spymode (loop every %d seconds)", spyLoop)
 	}
 	for {
-		//		fmt.Printf("on attend 5 secondes. %s", *ctx.cmdhandle.ProcessState)
 		time.Sleep(spyLoop * time.Second)
-		//		fmt.Println("on vient d'attendre 5 secondes.")
-		// _, err := os.FindProcess(ctx.cmdhandle.Process.Pid)
-		// if err != nil {
-		// 	//			fmt.Println("On a pas trouve le process.")
-		// 	mylog.Printf("spyProcess Failed to find %s process: %v. Maybe already terminated", ctx.cmdhandle.Path, err)
-		// 	return false, nil
-		// }
-		//		fmt.Printf("On a trouve le process. %d", p2.Pid)
 		if ctx.cmdhandle.ProcessState != nil && ctx.cmdhandle.ProcessState.Exited() {
 			return false, nil
 		}
 
-		//		fmt.Printf("Connectivite avec le endpoint. %s", getRemotePath(ctx))
 		conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", *ctx.endpoint, portCheck))
 		if err != nil {
 			fmt.Println("Connection error:", err)
@@ -761,13 +753,10 @@ func spyProcess(ctx *contextCache) (bool, error) {
 		}
 		mylog.Printf("Connection TCP on %s with port %d successful @ip(%s)", *ctx.endpoint, portCheck, conn.RemoteAddr())
 		conn.Close()
-
-		// if _, err := getFileSpec(getRemotePath(ctx), "spyprocess", *ctx.verbose); err != nil {
-		// 	mylog.Printf("spyProcess error on getFileSpec for %s", getRemotePath(ctx))
-		// }
 	}
 }
 
+// Démarrage du programme externe que nous allons surveiller
 func startCmd(ctx *contextCache) (int, error) {
 	// mylog.Printf("Starting [%s]", *ctx.cmd)
 	ctx.cmdhandle = exec.Command(*ctx.cmd)
@@ -785,6 +774,7 @@ func startCmd(ctx *contextCache) (int, error) {
 	return 0, nil
 }
 
+// On va faire du ménage dans les logs détaillés
 func cleanLogs(ctx *contextCache) {
 	files, err := getFiles(fmt.Sprintf("%s*.log", logFileName))
 	if err != nil {
@@ -805,17 +795,44 @@ func cleanLogs(ctx *contextCache) {
 			os.Remove(file.Name())
 		}
 	}
+}
 
+// On ajoute des information de session dans le log debug
+//
+func dumpDetailSession() {
+	mylog.Printf("Local device [%s]", os.Getenv("COMPUTERNAME"))
+	mylog.Printf("Broker: DNS Name[%s] / DomainName[%s]  / GatewayLocation[%s] / RemoteIpAddress[%s] / UserName[%s]",
+		os.Getenv("ViewClient_Broker_DNS_Name"),
+		os.Getenv("ViewClient_Broker_DomainName"),
+		os.Getenv("ViewClient_Broker_GatewayLocation"),
+		os.Getenv("ViewClient_Broker_Remote_IP_Address"),
+		os.Getenv("ViewClient_Broker_UserName"),
+	)
+	mylog.Printf("Client: IP Address[%s] / Launch ID[%s]  / Session[%s] / Machine[%s.%s] / UserName[%s]",
+		os.Getenv("ViewClient_IP_Address"),
+		os.Getenv("ViewClient_Launch_ID"),
+		os.Getenv("ViewClient_SessionType"),
+		os.Getenv("ViewClient_Machine_Name"),
+		os.Getenv("ViewClient_Machine_FQDN"),
+		os.Getenv("ViewClient_Username"),
+	)
+	mylog.Printf("Misc: Protocol[%s] / Client type[%s]  / TimeZone[%s]",
+		os.Getenv("ViewClient_Protocol"),
+		os.Getenv("ViewClient_Type"),
+		os.Getenv("ViewClient_Windows_Timezone"),
+	)
 }
 
 // VersionNum : Litteral version
-const VersionNum = "1.4"
+const VersionNum = "1.4.2"
 
 // V 1.0 - Initial release - 2017 09 11
 // V 1.1 - Ajout de x Versions du fichier avant écrasement
 // V 1.2 - On copie à pleine vitesse dans les 2 sens - Correction du File Rotate
 // V 1.3 - Correction apportée si les fichiers sont en RO (avant écrasement) - On met un fichier vide en Physique après récupération de la base dégradée. - Ajout de log dans fichier
 // V 1.4 - Surveillance de la connexion avec le endpoint. Arrêt de process DACQ.exe si perte de connexion
+// V 1.4.1 - Ajout de log détaillé sur les sessions Remote
+// V 1.4.2 - Meilleure gestion des Fatal Error (on doit rester en mode surveillance si le DACQ.exe est lancé)
 
 func main() {
 	fmt.Printf("checknstart - Check and start - C.m. 2017 - V%s\n", VersionNum)
@@ -828,11 +845,16 @@ func main() {
 	// The API for setting attributes is a little different than the package level
 	// exported logger. See Godoc.
 	mylog.Out = file
+	mylog.Printf("Starting program ChecknStart %s", VersionNum)
 
 	// Récupération des arguments de base (Variable d'environnement ou Argument en ligne de commande)
 	if err := processArgs(&contexte); err != nil {
 		mylog.Println(err)
 		os.Exit(1) // User error (Usage)
+	}
+
+	if *contexte.verbose {
+		dumpDetailSession()
 	}
 
 	// le fichier distant est il accessible
