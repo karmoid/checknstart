@@ -23,7 +23,9 @@ _testmain.go
 *.test
 *.prof
 *.log
-debug
+debug*
+*.back
+*.bak
 
 
 # =========================
